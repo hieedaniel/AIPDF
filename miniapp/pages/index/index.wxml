@@ -3,89 +3,151 @@
 <!-- 拖动排序时锁住页面滚动，避免“手指不动、页面乱跑” -->
 <page-meta page-style="{{dragging ? 'overflow: hidden;' : ''}}" />
 
+<!-- 背景层：渐变 + 三个模糊光斑，让白卡片有层次（不参与手势） -->
+<view class="bg">
+  <view class="bg__blob bg__blob--1"></view>
+  <view class="bg__blob bg__blob--2"></view>
+  <view class="bg__blob bg__blob--3"></view>
+</view>
+
 <view class="page">
 
-  <!-- ============ 顶部标题 ============ -->
+  <!-- ============ 顶部氛围卡 ============ -->
   <view class="hero">
-    <view class="hero__title">AI 拍纸立得 - 图片转 PDF</view>
-    <view class="hero__sub">拍摄 / 选图 → 旋转、排序 → 一键合成 A4 文档，可保存与转发</view>
-    <!-- 调试态提示：直观确认当前连的是哪个后端（prod 不显示） -->
-    <view class="hero__dev" wx:if="{{isLocal}}">调试 · {{env}} · {{baseUrl}}{{appId ? ' · ' + appId : ''}}</view>
+    <view class="hero__petal hero__petal--1"></view>
+    <view class="hero__petal hero__petal--2"></view>
+    <view class="hero__title">拍纸立得</view>
+    <view class="hero__sub">把照片装进一本小册子</view>
+
+    <view class="steps">
+      <view class="steps__item">
+        <text class="steps__no">1</text>
+        <text class="steps__txt">拍摄选图</text>
+      </view>
+      <text class="steps__sep">›</text>
+      <view class="steps__item">
+        <text class="steps__no">2</text>
+        <text class="steps__txt">旋转排序</text>
+      </view>
+      <text class="steps__sep">›</text>
+      <view class="steps__item">
+        <text class="steps__no">3</text>
+        <text class="steps__txt">合成 PDF</text>
+      </view>
+    </view>
+
+    <!-- 调试态：直观确认当前连的是哪个后端（正式版不显示） -->
+    <view class="hero__dev" wx:if="{{isLocal}}">
+      <text class="hero__devline">调试模式 · {{env}}</text>
+      <text class="hero__devline">{{baseUrl}}</text>
+      <text class="hero__devline" wx:if="{{appId}}">AppID {{appId}}</text>
+    </view>
   </view>
 
-  <!-- ============ 已选图片网格 ============ -->
-  <view class="panel">
-    <view class="panel__head">
-      <text class="panel__title">已选图片</text>
-      <text class="panel__count">{{images.length}} / {{maxCount}}</text>
+  <!-- ============ 我的照片 ============ -->
+  <view class="card">
+    <view class="card__head">
+      <view class="card__title">我的照片</view>
+      <view class="card__meta">
+        <text class="pill">{{images.length}} / {{maxCount}}</text>
+        <text class="link link--danger" wx:if="{{images.length && !generating}}" bindtap="clearAll">清空</text>
+      </view>
+    </view>
+
+    <!-- 张数进度：离上限还有多少一眼可见 -->
+    <view class="bar" wx:if="{{images.length}}">
+      <view class="bar__fill" style="width:{{images.length / maxCount * 100}}%"></view>
     </view>
 
     <!-- 空状态：整块可点击去选图 -->
     <view class="empty" wx:if="{{!images.length}}" bindtap="chooseImages">
-      <view class="empty__icon">🖼</view>
-      <view class="empty__title">还没有选择图片</view>
-      <view class="empty__desc">点击这里，或下方「添加图片 / 拍照」</view>
+      <view class="empty__art">
+        <view class="empty__card empty__card--l"></view>
+        <view class="empty__card empty__card--r"></view>
+        <view class="empty__card empty__card--c">
+          <text class="empty__plus">＋</text>
+        </view>
+      </view>
+      <view class="empty__title">还没有照片</view>
+      <view class="empty__desc">点这里，从相册选图或用相机拍一张</view>
     </view>
 
-    <!-- 图片网格：长按任意一张进入排序模式，按住即可拖动重排 -->
-    <view
-      class="grid {{sorting ? 'grid--sorting' : ''}}"
-      wx:else
-      bindtouchmove="onDragMove"
-      bindtouchend="endDrag"
-      bindtouchcancel="endDrag"
-    >
+    <block wx:else>
+      <!-- 排序提示条（放在网格上方，进入排序模式第一眼就能看到） -->
+      <view class="sortbar" wx:if="{{sorting}}">
+        <text class="sortbar__icon">✥</text>
+        <text class="sortbar__hint">按住照片拖动排序，也可点 ‹ › 微调</text>
+        <text class="sortbar__done" bindtap="exitSort">完成</text>
+      </view>
+
+      <!--
+        拍立得照片墙：长按任意一张进入排序模式，按住即可拖动重排。
+        touchmove / touchend 挂在容器上，拖动中的格子才不会被自身遮挡丢事件。
+      -->
       <view
-        class="cell cell--pic {{dragging && dragId === item.id ? 'cell--dragging' : ''}}"
-        wx:for="{{images}}"
-        wx:key="id"
-        data-index="{{index}}"
-        data-id="{{item.id}}"
-        style="{{dragging && dragId === item.id ? 'left:' + dragLeft + 'px;top:' + dragTop + 'px;width:' + cellW + 'px;height:' + cellH + 'px;' : ''}}"
-        bindlongpress="onCellLongPress"
-        bindtouchstart="onCellTouchStart"
+        class="grid {{sorting ? 'grid--sorting' : ''}}"
+        bindtouchmove="onDragMove"
+        bindtouchend="endDrag"
+        bindtouchcancel="endDrag"
       >
-        <!-- 点击查看大图（可双指放大 / 双击放大） -->
-        <image
-          class="cell__img"
-          src="{{item.path}}"
-          mode="aspectFill"
-          lazy-load
-          style="transform: rotate({{item.rotate}}deg)"
+        <view
+          class="cell cell--pic {{dragging && dragId === item.id ? 'cell--dragging' : ''}}"
+          wx:for="{{images}}"
+          wx:key="id"
           data-index="{{index}}"
-          bindtap="previewImage"
-        />
-        <!-- 序号，直观体现排版顺序 -->
-        <view class="cell__badge">{{index + 1}}</view>
-        <!-- 旋转：每次顺时针 90°，缩略图即时跟随 -->
-        <view class="cell__rot" data-index="{{index}}" catchtap="rotateImage">⟳</view>
-        <!-- 删除（catchtap 阻止冒泡，避免触发预览） -->
-        <view class="cell__del" data-index="{{index}}" catchtap="removeImage">✕</view>
-        <!-- 排序模式的兜底：拖动不好用时，点 ‹ / › 挪一格 -->
-        <view class="cell__move" wx:if="{{sorting}}">
-          <view class="cell__movebtn" data-index="{{index}}" data-delta="-1" catchtap="moveImage">‹</view>
-          <view class="cell__movebtn" data-index="{{index}}" data-delta="1" catchtap="moveImage">›</view>
+          data-id="{{item.id}}"
+          style="{{dragging && dragId === item.id ? 'left:' + dragLeft + 'px;top:' + dragTop + 'px;width:' + cellW + 'px;height:' + cellH + 'px;' : ''}}"
+          bindlongpress="onCellLongPress"
+          bindtouchstart="onCellTouchStart"
+        >
+          <!-- 排序模式的呼吸环（独立子元素，不与格子自身的 transform / 阴影冲突） -->
+          <view class="cell__ring" wx:if="{{sorting}}"></view>
+
+          <!-- 点击查看大图（可双指缩放 / 双击放大） -->
+          <view class="cell__box">
+            <image
+              class="cell__img"
+              src="{{item.path}}"
+              mode="aspectFill"
+              lazy-load
+              style="transform: rotate({{item.rotate}}deg)"
+              data-index="{{index}}"
+              bindtap="previewImage"
+            />
+          </view>
+
+          <!-- 相纸下沿的序号，直观体现排版顺序 -->
+          <view class="cell__no">第 {{index + 1}} 张</view>
+
+          <!-- 旋转：每次顺时针 90°，缩略图即时跟随 -->
+          <view class="cell__rot" data-index="{{index}}" catchtap="rotateImage">↻</view>
+          <!-- 删除（catchtap 阻止冒泡，避免触发预览） -->
+          <view class="cell__del" data-index="{{index}}" catchtap="removeImage">✕</view>
+          <!-- 排序模式的兜底：拖动不好用时，点 ‹ / › 挪一格 -->
+          <view class="cell__move" wx:if="{{sorting}}">
+            <view class="cell__movebtn" data-index="{{index}}" data-delta="-1" catchtap="moveImage">‹</view>
+            <view class="cell__movebtn" data-index="{{index}}" data-delta="1" catchtap="moveImage">›</view>
+          </view>
+        </view>
+
+        <!-- 追加入口 -->
+        <view class="cell cell--add" wx:if="{{images.length < maxCount}}" bindtap="chooseImages">
+          <view class="cell__plus">＋</view>
+          <view class="cell__addtext">继续添加</view>
         </view>
       </view>
 
-      <!-- 追加入口 -->
-      <view class="cell cell--add" wx:if="{{images.length < maxCount}}" bindtap="chooseImages">
-        <view class="cell__plus">＋</view>
-        <view class="cell__addtext">继续添加</view>
+      <view class="tips" wx:if="{{!sorting}}">
+        <text class="tips__dot"></text>
+        <text class="tips__txt">轻点照片可放大查看 · 长按照片可拖动排序</text>
       </view>
-    </view>
-
-    <!-- 排序模式提示条 -->
-    <view class="sortbar" wx:if="{{sorting}}">
-      <text class="sortbar__hint">按住图片拖动排序，也可点 ‹ › 微调</text>
-      <text class="sortbar__done" bindtap="exitSort">完成</text>
-    </view>
+    </block>
   </view>
 
   <!-- ============ 排版模式 ============ -->
-  <view class="panel">
-    <view class="panel__head">
-      <text class="panel__title">排版模式</text>
+  <view class="card">
+    <view class="card__head">
+      <view class="card__title">排版模式</view>
     </view>
     <view class="opts">
       <view
@@ -93,6 +155,7 @@
         data-mode="fit"
         bindtap="onPageModeChange"
       >
+        <view class="opt__tick" wx:if="{{pageMode === 'fit'}}">✓</view>
         <view class="opt__name">每图一页</view>
         <view class="opt__desc">每张照片独占一页 A4</view>
       </view>
@@ -101,6 +164,7 @@
         data-mode="split"
         bindtap="onPageModeChange"
       >
+        <view class="opt__tick" wx:if="{{pageMode === 'split'}}">✓</view>
         <view class="opt__name">长图分页</view>
         <view class="opt__desc">长截图自动切成多页</view>
       </view>
@@ -109,25 +173,22 @@
 
   <!-- ============ 底部操作区 ============ -->
   <view class="footer">
-    <view class="footer__meta" wx:if="{{images.length}}">
-      <text class="footer__hint">点图可放大预览（双指缩放）· 长按拖动排序</text>
-      <text class="footer__clear" bindtap="clearAll">清空全部</text>
+    <view class="footer__bar">
+      <button
+        class="btn btn--ghost"
+        hover-class="btn--press"
+        disabled="{{generating}}"
+        bindtap="chooseImages"
+      >＋ 添加</button>
+
+      <button
+        class="btn btn--primary"
+        hover-class="btn--press"
+        loading="{{generating}}"
+        disabled="{{generating || !images.length}}"
+        bindtap="generatePdf"
+      >{{generating ? (progressText || '生成中…') : '✨ 生成 PDF'}}</button>
     </view>
-
-    <button
-      class="btn btn--ghost"
-      hover-class="btn--hover"
-      disabled="{{generating}}"
-      bindtap="chooseImages"
-    >添加图片 / 拍照</button>
-
-    <button
-      class="btn btn--primary"
-      hover-class="btn--hover"
-      loading="{{generating}}"
-      disabled="{{generating || !images.length}}"
-      bindtap="generatePdf"
-    >{{generating ? (progressText || '生成中…') : '生成 PDF 并预览'}}</button>
   </view>
 
   <!--

@@ -1,19 +1,114 @@
-/* app.wxss —— 全局基础样式 */
+/* app.wxss — 全局基础样式 + 设计变量（Creamy Blossom）
+ * 设计规范见 .agents/skills/feminine-miniapp-ui/
+ * 换肤只需改这一份变量：主色、底色、圆角、阴影。
+ */
 page {
+  /* ---------- 底色 ---------- */
+  --c-bg-1: #fff5f8;
+  --c-bg-2: #fbf3ff;
+  --c-bg-3: #f5f8ff;
+  --c-surface: #ffffff;
+  --c-surface-soft: #fff9fb;
+
+  /* ---------- 主色与辅助色（规则：浅粉只做填充，深玫瑰做文字/图标） ---------- */
+  --c-primary: #ff7fa8;
+  --c-primary-deep: #c22a5f;
+  --c-primary-soft: #ffe6ef;
+  --c-lilac: #b69cff;
+  --c-lilac-soft: #f0e9ff;
+  --c-peach: #ffb58c;
+  --c-mint: #7ed3be;
+
+  /* ---------- 文字 ---------- */
+  --c-text-1: #4b3a50;
+  --c-text-2: #75627e;
+  --c-text-3: #9b8ea3;
+  --c-line: #f3e7ef;
+  --c-danger: #cf3a63;
+
+  /* ---------- 渐变（同色系相邻色，不做彩虹） ---------- */
+  /* 主渐变刻意压深：白字对比度 ~3.3:1，浅粉渐变只有 2.4:1 会看不清 */
+  --g-primary: linear-gradient(135deg, #dd4b80 0%, #cd3f74 55%, #9b4fd8 100%);
+  --g-hero: linear-gradient(140deg, #fff1f7 0%, #fdeffa 45%, #f3eeff 100%);
+  --g-soft: linear-gradient(160deg, #fff7fa 0%, #fbf2ff 55%, #f4f7ff 100%);
+  --g-progress: linear-gradient(90deg, #ffa8c4 0%, #dd4b80 50%, #9b4fd8 100%);
+  --g-photo: linear-gradient(150deg, #fff3f7 0%, #f6f1ff 100%);
+
+  /* ---------- 阴影：一律带主色相 ---------- */
+  --sh-card: 0 12rpx 32rpx rgba(236, 92, 144, 0.1), 0 2rpx 6rpx rgba(75, 58, 80, 0.04);
+  --sh-float: 0 18rpx 44rpx rgba(217, 66, 122, 0.22);
+  --sh-btn: 0 14rpx 28rpx rgba(221, 75, 128, 0.32);
+  --sh-ring: inset 0 0 0 2rpx rgba(255, 127, 168, 0.16);
+
+  /* ---------- 圆角与间距（只允许用这几档） ---------- */
+  --r-xs: 12rpx;
+  --r-sm: 20rpx;
+  --r-md: 28rpx;
+  --r-lg: 36rpx;
+  --r-pill: 999rpx;
+  --sp-1: 8rpx;
+  --sp-2: 16rpx;
+  --sp-3: 24rpx;
+  --sp-4: 32rpx;
+  --sp-5: 48rpx;
+
+  /* ---------- 动效 ---------- */
+  --d-fast: 150ms;
+  --d-base: 220ms;
+  --d-slow: 1600ms;
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  /* 循环动画的迭代次数；开启「减少动态效果」时置为 1，配合极短时长等于关掉 */
+  --anim-loop: infinite;
+
   box-sizing: border-box;
-  background: #f4f5f7;
+  background: var(--g-soft);
   font-size: 28rpx;
-  color: #1f2329;
+  color: var(--c-text-1);
   -webkit-font-smoothing: antialiased;
 }
 
+page,
 view,
 text,
 image,
 button {
   box-sizing: border-box;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", sans-serif;
 }
 
 image {
   will-change: transform;
+}
+
+/* 通用进入动画（只动 opacity / transform，成本最低） */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(16rpx);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 背景光斑漂移 */
+@keyframes drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(24rpx, -30rpx, 0) scale(1.06);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  page {
+    --d-fast: 1ms;
+    --d-base: 1ms;
+    --d-slow: 1ms;
+    --anim-loop: 1;
+  }
 }

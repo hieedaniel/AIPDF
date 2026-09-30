@@ -217,6 +217,30 @@ python -c "import fitz;d=fitz.open(sorted(__import__('glob').glob('static/pdfs/*
 > 后端没重新部署时：`limits` 与 `items` 都不存在（旧版 `/health` 没有这两个字段），
 > 小程序会静默回退到本地默认值（最多 30 张，但服务端只收 20 张就会报 `TOO_MANY_FILES`）。
 
+### 5.2 界面（配色 / 排版）自检
+
+不想开微信开发者工具就能看界面长什么样：
+
+```powershell
+node scripts/check-miniapp.js      # 先查结构：wxml 里的事件、data 字段、class 是否都存在
+node scripts/preview-miniapp.js    # 再查视觉：真实渲染 + 实测对比度，截图在 var/preview-miniapp.png
+```
+
+`preview-miniapp.js` 会用本机 Edge/Chrome 无头渲染出 4 个画面（有图 / 排序中 / 空状态 / 生成中）并自动量：
+横向溢出、网格列数、拍纸立得与追加格是否等高、文字被裁剪或意外换行、底部固定栏是否遮住内容，
+以及每个文字对实际背景（含渐变，按每个色标取最差）的对比度。退出码 = 硬性问题数。
+
+| 现象 | 原因与处理 |
+| --- | --- |
+| 改了 wxss 后界面没变 | 小程序 wxss 有热重载但不总生效，开发工具里按「编译」；预览图用的是本地 wxss，改了直接重跑脚本 |
+| 想换一个主色/底色 | 只改 `miniapp/app.wxss` 里 `page {}` 的 CSS 变量（`--c-primary` / `--g-hero` / `--g-primary`），页面样式全部走 `var(--...)` |
+| 文字发白看不清 | 大概率又把浅彩色当文字色用了——浅色只做填充，深色（`--c-primary-deep`）写文字；跑 `preview-miniapp.js` 看对比度报告 |
+| 拍纸立得格子里图变形 | 图容器用 `padding-top:100%` 撑正方形 + `object-fit: cover`；不要给图片本身写死高宽 |
+| 底部按钮遮住最后一行 | 内容区需要 `padding-bottom` 大于底栏高度（当前 135rpx > 底栏 ~66rpx），跑脚本会自动报 |
+
+> 设计规范（色板、阴影、圆角、字阶、组件配方）在 `.agents/skills/feminine-miniapp-ui/`，
+> 后续再改 UI 先读那份 `SKILL.md`，别重新拍脑袋配色。
+
 ---
 
 ## 6. 真机预览 / 真机调试（可选）

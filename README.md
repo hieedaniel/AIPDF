@@ -41,11 +41,19 @@ AIPDF/
 │   ├── app.js / app.json / app.wxss / sitemap.json / project.config.json
 │   ├── LOCAL_TEST.md             # 本地联调测试指南（模拟器 / 真机）
 │   └── pages/index/index.{wxml,wxss,js,json}
+├── .agents/skills/
+│   └── feminine-miniapp-ui/      # ★ 女性向 UI 设计 skill（铁律/token/组件配方/调研）
+│       ├── SKILL.md              #    改界面前读这个
+│       ├── references/           #    research / tokens / components
+│       └── assets/tokens.wxss    #    可 @import 的设计变量
 ├── start_backend.bat             # 双击即用：环境自检 + 端口检查 + 启动后端（Windows）
 ├── scripts/
 │   ├── dev-server.ps1            # PowerShell 版启动器（仅启动 + 打印地址）
 │   ├── check_env.py              # 环境自检（Python 版本 / 依赖 / PDF 引擎）
-│   └── net_info.ps1              # 探测局域网 IP、端口占用 PID
+│   ├── net_info.ps1              # 探测局域网 IP、端口占用 PID
+│   ├── check-server.ps1          # 线上服务器自检（health / 上传 / 转换 / 旋转 / 兼容）
+│   ├── check-miniapp.js          # 小程序结构自检（wxml 事件与 data 字段是否都存在）
+│   └── preview-miniapp.js        # 小程序视觉验收（无头渲染 + 实测对比度 + 截图）
 ├── .github/workflows/
 │   └── docker-publish.yml        # CI：lint + 测试 → 构建镜像推送到 ghcr.io
 ├── deploy/
@@ -442,6 +450,45 @@ powershell -ExecutionPolicy Bypass -File .\scripts\check-server.ps1
 docker logs -f --tail=200 aipdf
 tail -f /var/log/nginx/aipdf.access.log
 ```
+
+### 5.6 界面设计系统（Creamy Blossom）与自检脚本
+
+小程序的视觉不是随手调色，而是一套写在 `miniapp/app.wxss` 里的设计 token + 可复用的
+设计规范文档，放在 `.agents/skills/feminine-miniapp-ui/`（pi 的 skill，供后续改 UI 时复用）：
+
+```
+.agents/skills/feminine-miniapp-ui/
+├── SKILL.md                 设计铁律 + 工作流 + 自检清单
+├── references/research.md   参考产品 / 设计母题 / 反面清单 / 落地顺序
+├── references/tokens.md     色板、渐变、阴影、圆角、字阶、动效、对比度底线
+├── references/components.md 10 个可直接抄的组件配方
+└── assets/tokens.wxss       可 @import 的变量文件
+```
+
+现行界面风格是「奶油粉 + 拍立得」：浅色渐变底 + 3 个模糊光斑，
+照片用白边相纸（白框 + 底部序号）而不是普通圆角图，粉色只出现在按钮/徽标/装饰点上。
+改配色只需改 `app.wxss` 里 `page {}` 的 CSS 变量，页面样式全部通过 `var(--...)` 引用。
+
+两条硬规则（都是踩坑后的结论）：
+
+- **浅彩色只做填充，深彩色写文字/图标**。白字压在 `#FF7FA8` 上实测只有 2.37:1，
+  所以 Hero 改成**浅色渐变底 + 梅子色字**（9.15:1），主按钮渐变整体压深到白字 3.89:1。
+- **阴影一律带主色相**（`rgba(236,92,144,.16)`），黑灰阴影是廉价感的最大来源。
+
+改完界面必须跑两个脚本（不要只凭肉眼）：
+
+```bash
+node scripts/check-miniapp.js      # 结构校验：wxml 事件 / data 字段 / class 是否与 js、wxss 对得上
+node scripts/preview-miniapp.js    # 视觉验收：真实渲染 + 实测对比度，并输出截图
+```
+
+`preview-miniapp.js` 把 wxss 里的 rpx 按 390/750 换算成 px，用本机 Edge/Chrome 无头渲染出
+4 个体面的手机画面（有图 / 排序模式 / 空状态 / 生成中），然后自动量：
+横向溢出、网格列数、拍立得与追加格是否等高、文字是否被裁剪或意外换行、
+底部固定栏是否遮住内容，以及**逐元素向上找背景（含渐变，按每个色标取最差）算对比度**。
+退出码 = 硬性问题数，输出截图在 `var/preview-miniapp.png`（`var/` 已在 .gitignore 里）。
+
+当前实测结果：`0 项硬性问题`，非装饰性文字全部 ≥ 4.5:1（仅主按钮白字 3.89:1，属有意取舍）。
 
 ---
 

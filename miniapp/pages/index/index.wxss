@@ -1,395 +1,732 @@
-/* pages/index/index.wxss */
+/* pages/index/index.wxss —— Creamy Blossom 主题
+ * 设计规范：.agents/skills/feminine-miniapp-ui/
+ * 变量（主色/底色/圆角/阴影）定义在 app.wxss 的 page 上。
+ */
 
-page {
-  background: #f4f5f7;
-  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
-  color: #1f2329;
+/* ===========================================================================
+ * 1. 背景层：渐变底 + 三个模糊光斑，让白卡片「浮」起来
+ * =========================================================================== */
+.bg {
+  position: fixed;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
 }
 
+.bg__blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(60rpx);
+  opacity: 0.55;
+}
+
+.bg__blob--1 {
+  width: 420rpx;
+  height: 420rpx;
+  left: -120rpx;
+  top: -80rpx;
+  background: #ffd3e2;
+  animation: drift 16s ease-in-out var(--anim-loop);
+}
+
+.bg__blob--2 {
+  width: 360rpx;
+  height: 360rpx;
+  right: -110rpx;
+  top: 300rpx;
+  background: #dccbff;
+  animation: drift 21s ease-in-out var(--anim-loop) reverse;
+}
+
+.bg__blob--3 {
+  width: 520rpx;
+  height: 520rpx;
+  left: 80rpx;
+  bottom: -200rpx;
+  background: #cde6ff;
+  opacity: 0.38;
+}
+
+/* ===========================================================================
+ * 2. 页面容器
+ * =========================================================================== */
 .page {
-  min-height: 100vh;
-  box-sizing: border-box;
-  /* 给底部固定操作区留出空间（含 iPhone 安全区） */
-  padding: 24rpx 24rpx calc(360rpx + env(safe-area-inset-bottom));
+  position: relative;
+  z-index: 1;
+  padding: var(--sp-3) var(--sp-3) calc(260rpx + env(safe-area-inset-bottom));
 }
 
-/* ================= 顶部标题 ================= */
+/* ===========================================================================
+ * 3. 顶部氛围卡
+ * =========================================================================== */
 .hero {
-  padding: 32rpx 28rpx 36rpx;
-  border-radius: 24rpx;
-  background: linear-gradient(135deg, #4a6cf7 0%, #6f5cf6 100%);
-  box-shadow: 0 12rpx 28rpx rgba(74, 108, 247, 0.28);
+  position: relative;
+  overflow: hidden;
+  padding: 44rpx 32rpx 40rpx;
+  border-radius: var(--r-lg);
+  background: var(--g-hero);
+  box-shadow: var(--sh-card), var(--sh-ring);
+  animation: fade-up var(--d-base) var(--ease) both;
+}
+
+/* 右上角高光：制造柔光感 */
+.hero::after {
+  content: '';
+  position: absolute;
+  right: -90rpx;
+  top: -120rpx;
+  width: 340rpx;
+  height: 340rpx;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.65);
+}
+
+/* 花瓣点缀（纯 CSS：圆角三角叠加，比 emoji 精致） */
+.hero__petal {
+  position: absolute;
+  width: 64rpx;
+  height: 64rpx;
+  border-radius: 50% 0 50% 50%;
+  background: rgba(255, 127, 168, 0.16);
+}
+
+.hero__petal--1 {
+  right: 54rpx;
+  top: 34rpx;
+  transform: rotate(18deg);
+}
+
+.hero__petal--2 {
+  right: 116rpx;
+  top: 96rpx;
+  width: 40rpx;
+  height: 40rpx;
+  opacity: 0.7;
+  transform: rotate(-24deg);
 }
 
 .hero__title {
-  font-size: 40rpx;
+  position: relative;
+  z-index: 1;
+  font-size: 46rpx;
+  line-height: 1.25;
   font-weight: 700;
-  color: #ffffff;
-  letter-spacing: 1rpx;
+  letter-spacing: 2rpx;
+  color: var(--c-text-1);
 }
 
 .hero__sub {
-  margin-top: 12rpx;
+  position: relative;
+  z-index: 1;
+  margin-top: 10rpx;
   font-size: 24rpx;
   line-height: 1.6;
-  color: rgba(255, 255, 255, 0.86);
+  color: var(--c-text-2);
 }
 
-/* 本地调试时的后端地址提示 */
-.hero__dev {
-  display: inline-block;
-  margin-top: 20rpx;
-  padding: 8rpx 16rpx;
-  border-radius: 10rpx;
-  background: rgba(0, 0, 0, 0.18);
+/* 三步流程：胶囊小标签 */
+.steps {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  margin-top: 28rpx;
+}
+
+.steps__item {
+  display: flex;
+  align-items: center;
+  padding: 6rpx 16rpx;
+  border-radius: var(--r-pill);
+  background: #fff;
+  box-shadow: 0 6rpx 16rpx rgba(236, 92, 144, 0.12);
+}
+
+.steps__no {
+  width: 30rpx;
+  height: 30rpx;
+  margin-right: 8rpx;
+  border-radius: 50%;
+  background: var(--c-primary-deep);
+  color: #fff;
+  font-size: 20rpx;
+  font-weight: 700;
+  line-height: 30rpx;
+  text-align: center;
+}
+
+.steps__txt {
   font-size: 22rpx;
-  color: #ffffff;
+  color: var(--c-text-2);
 }
 
-/* ================= 卡片 ================= */
-.panel {
+.steps__sep {
+  margin: 0 4rpx;
+  font-size: 26rpx;
+  color: var(--c-text-3);
+}
+
+/* 调试信息：半透明玻璃胶囊，正式版不渲染 */
+.hero__dev {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
   margin-top: 24rpx;
-  padding: 24rpx;
-  border-radius: 20rpx;
-  background: #ffffff;
-  box-shadow: 0 4rpx 16rpx rgba(31, 35, 41, 0.05);
+  padding: 14rpx 20rpx;
+  border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, 0.75);
 }
 
-.panel__head {
+.hero__devline {
+  font-size: 20rpx;
+  line-height: 1.7;
+  color: var(--c-text-2);
+  word-break: break-all;
+}
+
+/* ===========================================================================
+ * 4. 卡片
+ * =========================================================================== */
+.card {
+  margin-top: var(--sp-2);
+  padding: var(--sp-3);
+  border-radius: var(--r-lg);
+  background: var(--c-surface);
+  box-shadow: var(--sh-card);
+  animation: fade-up var(--d-base) var(--ease) both;
+}
+
+.card + .card {
+  animation-delay: 70ms;
+}
+
+.card__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  min-height: 48rpx;
+}
+
+.card__title {
+  display: flex;
+  align-items: center;
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--c-text-1);
+}
+
+/* 标题前的粉色小圆点 + 光圈，比下划线精致 */
+.card__title::before {
+  content: '';
+  width: 12rpx;
+  height: 12rpx;
+  margin-right: 12rpx;
+  border-radius: 50%;
+  background: var(--g-primary);
+  box-shadow: 0 0 0 6rpx var(--c-primary-soft);
+}
+
+.card__meta {
+  display: flex;
+  align-items: center;
+}
+
+.pill {
+  margin-left: 12rpx;
+  padding: 4rpx 18rpx;
+  border-radius: var(--r-pill);
+  background: var(--c-primary-soft);
+  color: var(--c-primary-deep);
+  font-size: 22rpx;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.link {
+  margin-left: 18rpx;
+  padding: 6rpx 10rpx;
+  font-size: 24rpx;
+  color: var(--c-text-2);
+}
+
+.link--danger {
+  color: var(--c-danger);
+}
+
+/* 张数进度条 */
+.bar {
+  height: 10rpx;
+  margin-top: var(--sp-2);
+  border-radius: var(--r-pill);
+  background: var(--c-primary-soft);
+  overflow: hidden;
+}
+
+.bar__fill {
+  height: 100%;
+  border-radius: var(--r-pill);
+  background: var(--g-progress);
+  transition: width var(--d-base) var(--ease);
+}
+
+/* ===========================================================================
+ * 5. 空状态（纯 CSS 插画：三张散开的相纸）
+ * =========================================================================== */
+.empty {
+  margin-top: var(--sp-2);
+  padding: 40rpx 24rpx 44rpx;
+  border-radius: var(--r-md);
+  background: linear-gradient(150deg, #fff6fa 0%, #f8f2ff 100%);
+  box-shadow: var(--sh-ring);
+  text-align: center;
+  transition: transform var(--d-fast) var(--ease);
+}
+
+.empty:active {
+  transform: scale(0.985);
+}
+
+.empty__art {
+  position: relative;
+  height: 168rpx;
   margin-bottom: 20rpx;
 }
 
-.panel__title {
-  font-size: 28rpx;
-  font-weight: 600;
+.empty__card {
+  position: absolute;
+  left: 50%;
+  top: 10rpx;
+  width: 116rpx;
+  height: 140rpx;
+  border-radius: 14rpx;
+  background: #fff;
+  box-shadow: 0 10rpx 24rpx rgba(236, 92, 144, 0.16);
 }
 
-.panel__count {
-  font-size: 24rpx;
-  color: #8b93a3;
+.empty__card--c {
+  transform: translateX(-50%) rotate(-2deg);
 }
 
-/* ================= 空状态 ================= */
-.empty {
-  padding: 56rpx 0 64rpx;
-  text-align: center;
-  border: 2rpx dashed #d9dde6;
-  border-radius: 16rpx;
-  background: #fafbfd;
+.empty__card--l {
+  opacity: 0.72;
+  transform: translateX(-50%) translateX(-64rpx) rotate(-13deg);
 }
 
-.empty__icon {
-  font-size: 64rpx;
-  line-height: 1;
+.empty__card--r {
+  opacity: 0.72;
+  transform: translateX(-50%) translateX(64rpx) rotate(12deg);
+}
+
+.empty__plus {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 42rpx;
+  font-size: 44rpx;
+  font-weight: 300;
+  color: var(--c-primary-deep);
 }
 
 .empty__title {
-  margin-top: 20rpx;
-  font-size: 28rpx;
-  color: #4e5769;
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--c-text-1);
 }
 
 .empty__desc {
-  margin-top: 8rpx;
+  margin-top: 10rpx;
   font-size: 24rpx;
-  color: #9aa2b1;
+  line-height: 1.6;
+  color: var(--c-text-2);
 }
 
-/* ================= 图片网格 ================= */
+/* ===========================================================================
+ * 6. 排序提示条（放在网格上方，进入排序模式第一眼可见）
+ * =========================================================================== */
+.sortbar {
+  display: flex;
+  align-items: center;
+  margin-top: var(--sp-2);
+  padding: 16rpx 12rpx 16rpx 20rpx;
+  border-radius: var(--r-md);
+  background: linear-gradient(120deg, #fff1f6 0%, #f5efff 100%);
+  box-shadow: var(--sh-ring);
+  animation: fade-up var(--d-fast) var(--ease) both;
+}
+
+.sortbar__icon {
+  margin-right: 10rpx;
+  font-size: 24rpx;
+  color: var(--c-primary-deep);
+}
+
+.sortbar__hint {
+  flex: 1;
+  font-size: 22rpx;
+  line-height: 1.5;
+  color: var(--c-text-2);
+}
+
+.sortbar__done {
+  padding: 8rpx 24rpx;
+  border-radius: var(--r-pill);
+  background: var(--c-surface);
+  color: var(--c-primary-deep);
+  font-size: 24rpx;
+  font-weight: 600;
+  box-shadow: 0 6rpx 16rpx rgba(236, 92, 144, 0.18);
+}
+
+/* ===========================================================================
+ * 7. 拍立得照片墙
+ * =========================================================================== */
 .grid {
   display: flex;
   flex-wrap: wrap;
+  margin-top: var(--sp-2);
+  animation: fade-up var(--d-fast) var(--ease) both;
 }
 
-/* 排序模式：给可拖动的格子加一圈提示（用 box-shadow，不改布局尺寸） */
-.grid--sorting .cell--pic {
-  box-shadow: 0 0 0 4rpx rgba(74, 108, 247, 0.45);
-}
-
+/* 相纸：白框 + 底部留白 + 柔和带色投影 */
 .cell {
   position: relative;
-  width: 200rpx;
-  height: 200rpx;
-  margin: 0 14rpx 14rpx 0;
-  border-radius: 16rpx;
-  overflow: hidden;
-  background: #eef0f5;
+  width: calc((100% - 32rpx) / 3);
+  margin: 0 16rpx 16rpx 0;
+  padding: 10rpx 10rpx 0;
+  border-radius: var(--r-sm);
+  background: #fff;
+  box-shadow: 0 6rpx 18rpx rgba(236, 92, 144, 0.12);
+  transition: transform var(--d-fast) var(--ease);
 }
 
-/* 每行 3 个，去掉最后多余的右边距 */
 .cell:nth-child(3n) {
   margin-right: 0;
 }
 
-/* 拖动中的格子：脱离文档流跟着手指跑，其它格子自动让位 */
+.cell:active {
+  transform: scale(0.97);
+}
+
+/* 正方形画框：用 padding-top 撑高，兼容性优于 aspect-ratio */
+.cell__box {
+  position: relative;
+  width: 100%;
+  padding-top: 100%;
+  border-radius: 14rpx;
+  overflow: hidden;
+  background: var(--g-photo);
+}
+
+.cell__img {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  transition: transform var(--d-base) var(--ease);
+}
+
+/* 相纸下沿：序号 */
+.cell__no {
+  height: 40rpx;
+  font-size: 20rpx;
+  line-height: 40rpx;
+  text-align: center;
+  color: var(--c-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.grid--sorting .cell__no {
+  color: var(--c-primary-deep);
+}
+
+/* 照片上的圆形小按钮 */
+.cell__rot,
+.cell__del {
+  position: absolute;
+  top: 18rpx;
+  width: 48rpx;
+  height: 48rpx;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.9);
+  font-size: 26rpx;
+  line-height: 48rpx;
+  text-align: center;
+  box-shadow: 0 4rpx 12rpx rgba(236, 92, 144, 0.22);
+}
+
+.cell__rot {
+  left: 18rpx;
+  color: var(--c-primary-deep);
+}
+
+.cell__del {
+  right: 18rpx;
+  color: var(--c-danger);
+  font-size: 22rpx;
+}
+
+/* 排序模式的呼吸环：独立子元素，不与格子的 transform / 阴影打架 */
+.cell__ring {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  border-radius: var(--r-sm);
+  border: 2rpx solid rgba(255, 127, 168, 0.55);
+  pointer-events: none;
+  /* 只动 opacity（走合成层）。动画 box-shadow 会在 30 个格子上每帧重绘，低端机必卡 */
+  animation: ring 1600ms ease-in-out var(--anim-loop);
+}
+
+@keyframes ring {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* 兜底微调按钮 */
+.cell__move {
+  position: absolute;
+  left: 16rpx;
+  right: 16rpx;
+  bottom: 56rpx;
+  z-index: 3;
+  display: flex;
+  justify-content: space-between;
+}
+
+.cell__movebtn {
+  width: 52rpx;
+  height: 52rpx;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--c-primary-deep);
+  font-size: 30rpx;
+  line-height: 50rpx;
+  text-align: center;
+  box-shadow: 0 4rpx 12rpx rgba(236, 92, 144, 0.24);
+}
+
+/* 拖动中的格子：脱离文档流跟手。必须放在 .cell:active 之后（同优先级取后写的） */
 .grid .cell--dragging {
   position: fixed;
   z-index: 20;
   margin: 0;
-  opacity: 0.92;
-  transform: scale(1.08);
-  box-shadow: 0 16rpx 40rpx rgba(31, 35, 41, 0.35);
+  transform: rotate(-2deg) scale(1.08);
+  box-shadow: var(--sh-float);
 }
 
-.cell__img {
-  width: 100%;
-  height: 100%;
-  display: block;
-  /* 旋转过渡：点 ⟳ 时能看到方向变化，而不是突变 */
-  transition: transform 0.2s ease-out;
+/* 追加入口 */
+.cell--add {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 237rpx;
+  background: linear-gradient(150deg, #fff8fb 0%, #f8f4ff 100%);
+  box-shadow: var(--sh-ring);
 }
 
-.cell__badge {
-  position: absolute;
-  left: 10rpx;
-  bottom: 10rpx;
-  min-width: 36rpx;
-  height: 36rpx;
-  padding: 0 10rpx;
-  box-sizing: border-box;
-  border-radius: 18rpx;
-  background: rgba(0, 0, 0, 0.55);
-  color: #ffffff;
+.cell--add:active {
+  transform: scale(0.97);
+}
+
+.cell__plus {
+  width: 56rpx;
+  height: 56rpx;
+  border-radius: 50%;
+  background: var(--c-surface);
+  color: var(--c-primary-deep);
+  font-size: 36rpx;
+  font-weight: 300;
+  line-height: 54rpx;
+  text-align: center;
+  box-shadow: 0 6rpx 16rpx rgba(236, 92, 144, 0.2);
+}
+
+.cell__addtext {
+  margin-top: 10rpx;
+  font-size: 20rpx;
+  color: var(--c-text-2);
+}
+
+/* 操作小贴士 */
+.tips {
+  display: flex;
+  align-items: center;
+  margin-top: 4rpx;
+  padding: 0 4rpx;
+}
+
+.tips__dot {
+  width: 8rpx;
+  height: 8rpx;
+  margin-right: 10rpx;
+  border-radius: 50%;
+  background: var(--c-lilac);
+  opacity: 0.8;
+}
+
+.tips__txt {
   font-size: 22rpx;
-  line-height: 36rpx;
-  text-align: center;
+  line-height: 1.5;
+  color: var(--c-text-2);
 }
 
-/* 旋转按钮：左上角 */
-.cell__rot {
+/* ===========================================================================
+ * 8. 排版模式
+ * =========================================================================== */
+.opts {
+  display: flex;
+  margin-top: var(--sp-2);
+}
+
+.opt {
+  position: relative;
+  flex: 1;
+  padding: 22rpx 20rpx;
+  border-radius: var(--r-md);
+  background: var(--c-surface-soft);
+  box-shadow: inset 0 0 0 2rpx rgba(75, 58, 80, 0.04);
+  transition: all var(--d-fast) var(--ease);
+}
+
+.opt + .opt {
+  margin-left: var(--sp-1);
+}
+
+.opt--on {
+  background: linear-gradient(150deg, #fff1f6 0%, #f4eeff 100%);
+  box-shadow: var(--sh-card), var(--sh-ring);
+}
+
+.opt__name {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--c-text-1);
+}
+
+.opt--on .opt__name {
+  color: var(--c-primary-deep);
+}
+
+.opt__desc {
+  margin-top: 6rpx;
+  font-size: 22rpx;
+  line-height: 1.5;
+  color: var(--c-text-2);
+}
+
+.opt__tick {
   position: absolute;
-  left: 0;
-  top: 0;
-  width: 52rpx;
-  height: 52rpx;
-  border-bottom-right-radius: 16rpx;
-  background: rgba(0, 0, 0, 0.5);
-  color: #ffffff;
-  font-size: 30rpx;
-  line-height: 52rpx;
+  right: 14rpx;
+  top: 14rpx;
+  width: 34rpx;
+  height: 34rpx;
+  border-radius: 50%;
+  background: var(--c-primary-deep);
+  color: #fff;
+  font-size: 22rpx;
+  line-height: 34rpx;
   text-align: center;
+  box-shadow: 0 4rpx 10rpx rgba(236, 92, 144, 0.28);
 }
 
-.cell__rot:active {
-  background: rgba(74, 108, 247, 0.9);
-}
-
-.cell__del {
-  position: absolute;
-  right: 0;
-  top: 0;
-  width: 52rpx;
-  height: 52rpx;
-  border-bottom-left-radius: 16rpx;
-  background: rgba(0, 0, 0, 0.5);
-  color: #ffffff;
-  font-size: 26rpx;
-  line-height: 52rpx;
-  text-align: center;
-}
-
-.cell__del:active {
-  background: rgba(250, 81, 81, 0.9);
-}
-
-/* 排序模式的 ‹ › 按钮（拖动不好用时的兜底方案） */
-.cell__move {
-  position: absolute;
+/* ===========================================================================
+ * 9. 底部固定操作区
+ * =========================================================================== */
+.footer {
+  position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
-  display: flex;
-  height: 48rpx;
-  background: rgba(31, 35, 41, 0.6);
+  z-index: 10;
+  padding: var(--sp-2) var(--sp-3) calc(var(--sp-2) + env(safe-area-inset-bottom));
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  background: rgba(255, 249, 251, 0.97);
+  box-shadow: 0 -12rpx 32rpx rgba(236, 92, 144, 0.1);
 }
 
-.cell__movebtn {
-  flex: 1;
-  color: #ffffff;
-  font-size: 32rpx;
-  line-height: 48rpx;
-  text-align: center;
-}
-
-.cell__movebtn:active {
-  background: rgba(74, 108, 247, 0.9);
-}
-
-/* 排序模式提示条 */
-.sortbar {
+.footer__bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-top: 8rpx;
-  padding: 14rpx 18rpx;
-  border-radius: 14rpx;
-  background: #f0f3ff;
 }
 
-.sortbar__hint {
-  font-size: 22rpx;
-  color: #3b5be0;
-}
-
-.sortbar__done {
-  font-size: 24rpx;
+/* ===========================================================================
+ * 10. 胶囊按钮
+ * =========================================================================== */
+.btn {
+  height: 96rpx;
+  margin: 0;
+  padding: 0 32rpx;
+  border: none;
+  border-radius: var(--r-pill);
+  font-size: 30rpx;
   font-weight: 600;
-  color: #ffffff;
-  padding: 6rpx 22rpx;
-  border-radius: 24rpx;
-  background: #4a6cf7;
+  line-height: 96rpx;
+  transition: transform var(--d-fast) var(--ease), box-shadow var(--d-fast) var(--ease);
 }
 
-/* ================= 隐藏 canvas（旋转用） ================= */
+/* 干掉原生 button 的 1px 边框 */
+.btn::after {
+  border: none;
+}
+
+.btn--press {
+  transform: scale(0.965);
+}
+
+.btn--primary {
+  flex: 1;
+  margin-left: var(--sp-2);
+  color: #fff;
+  background: var(--g-primary);
+  box-shadow: var(--sh-btn);
+}
+
+.btn--ghost {
+  flex: 0 0 auto;
+  color: var(--c-primary-deep);
+  background: var(--c-surface);
+  box-shadow: 0 8rpx 20rpx rgba(236, 92, 144, 0.12), var(--sh-ring);
+}
+
+/* 禁用态：不用纯灰，用同色系的浅藕色，避免「坏掉」的观感 */
+.btn[disabled] {
+  color: #fff;
+  background: #ecd9e2;
+  box-shadow: none;
+  opacity: 1;
+}
+
+.btn--ghost[disabled] {
+  color: var(--c-text-3);
+  background: var(--c-surface-soft);
+  box-shadow: none;
+}
+
+/* ===========================================================================
+ * 11. 隐藏 canvas（旋转用）
+ * 不能用 display:none / visibility:hidden —— 那样节点不渲染，
+ * canvasToTempFilePath 会失败或导出空白，所以移出可视区。
+ * =========================================================================== */
 .offscreen-canvas {
   position: fixed;
   left: -9999px;
   top: 0;
   width: 2px;
   height: 2px;
-}
-
-/* 追加格子 */
-.cell--add {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  border: 2rpx dashed #c9d0dd;
-  background: #fafbfd;
-}
-
-.cell--add:active {
-  background: #f0f3fa;
-}
-
-.cell__plus {
-  font-size: 48rpx;
-  line-height: 1;
-  color: #8b93a3;
-}
-
-.cell__addtext {
-  margin-top: 8rpx;
-  font-size: 22rpx;
-  color: #9aa2b1;
-}
-
-/* ================= 排版模式 ================= */
-.opts {
-  display: flex;
-}
-
-.opt {
-  flex: 1;
-  padding: 20rpx 18rpx;
-  border: 2rpx solid #e3e7ee;
-  border-radius: 16rpx;
-  background: #fafbfd;
-}
-
-.opt:first-child {
-  margin-right: 16rpx;
-}
-
-.opt--on {
-  border-color: #4a6cf7;
-  background: #f0f3ff;
-}
-
-.opt__name {
-  font-size: 26rpx;
-  font-weight: 600;
-  color: #4e5769;
-}
-
-.opt--on .opt__name {
-  color: #3b5be0;
-}
-
-.opt__desc {
-  margin-top: 6rpx;
-  font-size: 22rpx;
-  line-height: 1.4;
-  color: #9aa2b1;
-}
-
-/* ================= 底部固定操作区 ================= */
-.footer {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  padding: 20rpx 24rpx calc(24rpx + env(safe-area-inset-bottom));
-  background: rgba(255, 255, 255, 0.96);
-  border-top: 2rpx solid #ebedf2;
-  box-shadow: 0 -6rpx 20rpx rgba(31, 35, 41, 0.06);
-}
-
-.footer__meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16rpx;
-}
-
-.footer__hint {
-  font-size: 22rpx;
-  color: #9aa2b1;
-}
-
-.footer__clear {
-  font-size: 24rpx;
-  color: #fa5151;
-  padding: 6rpx 12rpx;
-}
-
-/* 按钮：必须重置原生 button 的默认边框与背景 */
-.btn {
-  width: 100%;
-  height: 92rpx;
-  line-height: 92rpx;
-  padding: 0;
-  margin: 0;
-  font-size: 30rpx;
-  font-weight: 600;
-  border-radius: 46rpx;
-  border: none;
-}
-
-.btn::after {
-  border: none;
-}
-
-.btn--ghost {
-  color: #4a6cf7;
-  background: #ffffff;
-  border: 2rpx solid #b9c6fb;
-}
-
-.btn--primary {
-  margin-top: 16rpx;
-  color: #ffffff;
-  background: linear-gradient(135deg, #4a6cf7 0%, #6f5cf6 100%);
-  box-shadow: 0 10rpx 22rpx rgba(74, 108, 247, 0.3);
-}
-
-.btn--hover {
-  opacity: 0.85;
-}
-
-.btn[disabled] {
-  opacity: 0.5;
-  color: #ffffff;
-  background: #b6bccb;
-  box-shadow: none;
-}
-
-.btn--ghost[disabled] {
-  color: #9aa2b1;
-  background: #f4f5f7;
-  border-color: #e3e7ee;
+  z-index: -1;
 }
