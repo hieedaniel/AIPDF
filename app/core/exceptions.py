@@ -96,6 +96,16 @@ def image_not_found(image_id: str) -> ApiError:
     )
 
 
+def storage_not_writable(reason: str = "") -> ApiError:
+    """存储目录不可写（最常见的是 bind mount 属主与容器内 uid 不一致）。"""
+    detail = f"：{reason}" if reason else ""
+    return ApiError(
+        500,
+        "STORAGE_NOT_WRITABLE",
+        "服务器存储目录不可写，请检查容器挂载目录权限" + detail,
+    )
+
+
 # ------------------------- 全局异常处理器 -------------------------
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(ApiError)
@@ -123,6 +133,17 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=422,
             content={"code": "INVALID_PARAM", "message": "请求参数校验失败", "detail": detail},
+        )
+
+    @app.exception_handler(PermissionError)
+    async def _permission_error_handler(request: Request, exc: PermissionError) -> JSONResponse:
+        # 这类错误几乎全是「bind mount 的宿主机目录属主与容器内 uid 不一致」，
+        # 给出可操作的提示，避免只看到一个笼统的“服务器内部错误”。
+        logger.exception("存储不可写 %s %s", request.method, request.url.path)
+        err = storage_not_writable(str(exc))
+        return JSONResponse(
+            status_code=err.status_code,
+            content={"code": err.code, "message": err.message, "detail": err.detail},
         )
 
     @app.exception_handler(Exception)

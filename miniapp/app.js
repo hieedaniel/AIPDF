@@ -2,12 +2,13 @@
 //
 // 这里只放全局配置。页面里（pages/index/index.js）也有一份同样的环境开关，
 // 若你新增页面，建议统一改成从 globalData 读取。
-const ENV = 'local'; // 'local' | 'local-device' | 'prod'
+const ENV = 'local'; // 'local' | 'local-device' | 'server' | 'prod'
 
 const BASE_URLS = {
   local: 'http://127.0.0.1:8000',
   'local-device': 'http://192.168.1.100:8000', // TODO: 换成电脑的局域网 IP
-  prod: 'https://api.yourdomain.com', // TODO: 上线前换成正式域名
+  server: 'https://aipdf.seveninfo.cn', // 已部署服务器（本地连服务器调试）
+  prod: 'https://aipdf.seveninfo.cn', // TODO: 上线前确认正式域名
 };
 
 App({

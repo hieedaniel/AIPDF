@@ -8,9 +8,12 @@
 #   ./docker-deploy.sh --uninstall     # 停止并删除容器（保留数据）
 #   ./docker-deploy.sh --logs          # 跟踪日志
 #   ./docker-deploy.sh --status        # 查看状态与健康检查
+#   ./docker-deploy.sh --fix-perms     # 自检/修复数据目录权限（上传报 500 / Permission denied 时用）
+#   ./docker-deploy.sh --set-domain aipdf.example.cn   # 只改域名并重建容器（最快）
 #
 # 首次部署前按需修改下面「配置区」，或用环境变量覆盖：
 #   IMAGE=ghcr.io/xxx/aipdf:v1.0.0 ./docker-deploy.sh
+#   DOMAIN=aipdf.example.cn ./docker-deploy.sh   # 自动回填 PUBLIC_BASE_URL=https://aipdf.example.cn
 #   PUBLIC_BASE_URL=https://pdf.example.com ./docker-deploy.sh
 #   HOST_PORT=19533 ./docker-deploy.sh          # 换宿主机端口（默认 19530）
 #
@@ -26,6 +29,7 @@ DATA_DIR="${DATA_DIR:-/opt/aipdf}"                  # 宿主机数据目录（�
 HOST_PORT="${HOST_PORT:-19530}"                     # 宿主机端口（容器内固定 8000；避免与已有服务冲突）
 BIND_ADDR="${BIND_ADDR:-127.0.0.1}"                 # 只监听本机，由 Nginx 反代；想直接暴露改成 0.0.0.0
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-}"              # 【必填】如 https://pdf.example.com
+DOMAIN="${DOMAIN:-}"                              # 便捷变量：只填域名，脚本自动拼 https:// 并回填到配置文件
 CORS_ALLOW_ORIGINS="${CORS_ALLOW_ORIGINS:-*}"       # H5 用；小程序不受 CORS 限制
 TZ_VALUE="${TZ_VALUE:-Asia/Shanghai}"
 # GHCR 私有包需要登录。公开包可留空。
@@ -36,6 +40,9 @@ GHCR_TOKEN="${GHCR_TOKEN:-}"
 ENV_FILE="$DATA_DIR/aipdf.env"
 STATIC_DIR="$DATA_DIR/static"
 VAR_DIR="$DATA_DIR/var"
+# 容器内以非 root 用户运行（见 Dockerfile：useradd -u 10001 appuser）
+APP_UID="${APP_UID:-10001}"
+APP_GID="${APP_GID:-10001}"
 
 # ------------------------------- 小工具 ---------------------------------------
 c_red()   { printf '\033[31m%s\033[0m\n' "$*"; }
@@ -79,23 +86,150 @@ check_port_conflict() {
   fi
 }
 
+# 把 PUBLIC_BASE_URL 写进配置文件（幂等；内容没变就不动，改前自动备份）
+# 用法：apply_public_base_url aipdf.example.cn   /   apply_public_base_url https://aipdf.example.cn
+apply_public_base_url() {
+  local url="${1%/}"
+  if [ -z "$url" ]; then
+    return 0
+  fi
+  case "$url" in
+    http://*|https://*) ;;
+    *) url="https://${url}" ;;
+  esac
+  if [ ! -f "$ENV_FILE" ]; then
+    c_yellow "⚠ 未找到 $ENV_FILE，跳过 PUBLIC_BASE_URL 回填"
+    return 0
+  fi
+  local cur
+  cur="$(grep -m1 '^PUBLIC_BASE_URL=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
+  if [ "$cur" = "$url" ]; then
+    c_green "✓ PUBLIC_BASE_URL 已是 $url（无需修改）"
+    return 0
+  fi
+  cp -a "$ENV_FILE" "${ENV_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  if grep -q '^PUBLIC_BASE_URL=' "$ENV_FILE"; then
+    sed -i "s|^PUBLIC_BASE_URL=.*|PUBLIC_BASE_URL=${url}|" "$ENV_FILE"
+  else
+    printf 'PUBLIC_BASE_URL=%s\n' "$url" >> "$ENV_FILE"
+  fi
+  c_green "✓ PUBLIC_BASE_URL: ${cur:-（未配置）} → ${url}"
+}
+
+# 判断是否还是模板里的占位域名（精确比较主机名，避免把 myexample.com 当成 example.com）
+is_placeholder_url() {
+  local host="${1#*://}"
+  host="${host%%/*}"
+  host="${host%%:*}"
+  host="$(printf '%s' "$host" | tr 'A-Z' 'a-z')"
+  case "$host" in
+    yourdomain.com|*.yourdomain.com|your-domain.com|*.your-domain.com) return 0 ;;
+    example.com|*.example.com|example.org|*.example.org) return 0 ;;
+  esac
+  return 1
+}
+
+# 自检 PUBLIC_BASE_URL。配错的表现：合成明明成功，但小程序 downloadFile:fail
+# （因为后端返回的 pdf_url 指向了一个根本不存在/不可访问的域名）
+check_public_base_url() {
+  local cur
+  cur="$(grep -m1 '^PUBLIC_BASE_URL=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
+  if [ -z "$cur" ]; then
+    c_yellow "⚠ $ENV_FILE 未配置 PUBLIC_BASE_URL"
+    echo "  后端会按请求 Host 推导；直连 IP / 经 CDN 时可能生成错误的 pdf_url。"
+    echo "  建议：DOMAIN=你的域名 ./docker-deploy.sh   （或 ./docker-deploy.sh --set-domain 你的域名）"
+    return 1
+  fi
+  if is_placeholder_url "$cur"; then
+    c_red "✗ PUBLIC_BASE_URL 还是占位域名：$cur"
+    echo "  后果：接口返回的 pdf_url 指向一个不存在的域名，小程序合成成功却报"
+    echo "        downloadFile:fail timeout（或 url not in domain list）。"
+    echo "  立即修复：./docker-deploy.sh --set-domain 你的域名"
+    return 1
+  fi
+  case "$cur" in
+    http://*)
+      c_yellow "⚠ PUBLIC_BASE_URL 是 http：$cur"
+      echo "  微信小程序 downloadFile 要求 https，请配好证书后改成 https://..."
+      return 1 ;;
+  esac
+  c_green "✓ PUBLIC_BASE_URL = $cur"
+  return 0
+}
+
 # ------------------------------- 子命令 ---------------------------------------
 case "${1:-}" in
   --logs)    docker logs -f --tail=200 "$CONTAINER"; exit 0 ;;
   --status)
     docker ps --filter "name=^${CONTAINER}$" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+    echo "--- 配置（$ENV_FILE）---"
+    grep -E '^(PUBLIC_BASE_URL|PDF_ENGINE|PAGE_MODE|MAX_[A-Z_]+)=' "$ENV_FILE" 2>/dev/null || c_yellow "⚠ 未找到 $ENV_FILE"
+    check_public_base_url || true
     echo "--- /health ---"
     curl -fsS "http://${BIND_ADDR}:${HOST_PORT}/health" || true
     echo
     exit 0 ;;
   --restart) docker restart "$CONTAINER"; exit 0 ;;
+  --set-domain)
+    need_docker
+    _d="${2:-}"
+    if [ -z "$_d" ]; then
+      c_red "用法：./docker-deploy.sh --set-domain aipdf.example.cn"
+      exit 2
+    fi
+    _d="${_d#http://}"; _d="${_d#https://}"; _d="${_d%%/*}"
+    apply_public_base_url "https://${_d}"
+    c_blue "→ 重建容器让新配置生效（restart 不会重读 --env-file）"
+    exec bash "$(readlink -f "$0")" --deploy
+    ;;
+  --fix-perms)
+    need_docker
+    c_blue "=== 数据目录权限自检 / 修复（容器内 uid=${APP_UID}）==="
+    mkdir -p "$STATIC_DIR/pdfs" "$VAR_DIR/uploads"
+    echo "--- 当前属主 ---"
+    ls -ld "$STATIC_DIR" "$STATIC_DIR/pdfs" "$VAR_DIR" "$VAR_DIR/uploads" 2>/dev/null || true
+    echo "--- 容器内进程身份 ---"
+    docker exec "$CONTAINER" id 2>/dev/null || c_yellow "⚠ 容器 $CONTAINER 未运行"
+
+    if [ "$(id -u)" = "0" ]; then
+      chown -R "${APP_UID}:${APP_GID}" "$STATIC_DIR" "$VAR_DIR"
+      c_green "✓ 已执行 chown -R ${APP_UID}:${APP_GID} $STATIC_DIR $VAR_DIR"
+    else
+      c_yellow "⚠ 当前非 root，无法 chown；请用 sudo 重跑"
+    fi
+
+    # SELinux（CentOS/RHEL/部分 Aliyun 镜像）会拦住 bind mount，即使属主正确
+    if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce 2>/dev/null)" = "Enforcing" ]; then
+      if command -v chcon >/dev/null 2>&1; then
+        chcon -Rt svirt_sandbox_file_t "$STATIC_DIR" "$VAR_DIR" 2>/dev/null \
+          && c_green "✓ SELinux 上下文已放宽（svirt_sandbox_file_t）"
+      fi
+    fi
+
+    docker restart "$CONTAINER" >/dev/null 2>&1 || true
+    sleep 2
+
+    echo "--- 容器内实测写入 ---"
+    if docker exec -u "$APP_UID" "$CONTAINER" sh -c \
+         'touch /app/static/pdfs/.permtest && touch /app/var/uploads/.permtest && rm -f /app/static/pdfs/.permtest /app/var/uploads/.permtest' 2>/dev/null; then
+      c_green "✓ 可写：/app/static/pdfs 与 /app/var/uploads"
+      echo "  再验证一次：curl -X POST http://${BIND_ADDR}:${HOST_PORT}/api/v1/convert-to-pdf -F file=@某张图.jpg"
+    else
+      c_red "✗ 容器内仍不可写。依次排查："
+      echo "   1. 容器是否在跑：docker ps | grep $CONTAINER"
+      echo "   2. 挂载路径是否真的存在：docker inspect -f '{{json .Mounts}}' $CONTAINER"
+      echo "   3. 磁盘是否写满/只读：df -h $DATA_DIR"
+      echo "   4. SELinux：getenforce；或用 :z 挂载（-v $STATIC_DIR:/app/static:z）"
+      exit 1
+    fi
+    exit 0 ;;
   --uninstall)
     c_blue "→ 停止并删除容器 $CONTAINER（数据保留在 $DATA_DIR）"
     docker rm -f "$CONTAINER" 2>/dev/null || true
     c_green "✓ 已卸载"
     exit 0 ;;
   ""|--deploy) ;;
-  *) c_red "未知参数：$1（可用：--deploy/--logs/--status/--restart/--uninstall）"; exit 2 ;;
+  *) c_red "未知参数：$1（可用：--deploy/--logs/--status/--set-domain <域名>/--restart/--fix-perms/--uninstall）"; exit 2 ;;
 esac
 
 # ------------------------------- 正式部署 -------------------------------------
@@ -109,7 +243,17 @@ echo "  数据目录 : $DATA_DIR"
 echo "  监听     : ${BIND_ADDR}:${HOST_PORT} -> 容器内 8000"
 
 # 1) 目录
+# bind mount 的宿主机目录属主不对时容器内写不进去，表现为上传 500 /
+# 生成 PDF 报 PDF_BUILD_FAILED … Permission denied，所以这里统一修正属主。
 mkdir -p "$STATIC_DIR/pdfs" "$VAR_DIR/uploads"
+if [ "$(id -u)" = "0" ]; then
+  chown -R "${APP_UID}:${APP_GID}" "$STATIC_DIR" "$VAR_DIR" 2>/dev/null || true
+fi
+_dir_owner="$(stat -c '%u' "$STATIC_DIR" 2>/dev/null || echo '')"
+if [ -n "$_dir_owner" ] && [ "$_dir_owner" != "$APP_UID" ]; then
+  c_yellow "⚠ $STATIC_DIR 的属主 uid=$_dir_owner，容器内进程是 uid=$APP_UID，可能无法写入"
+  echo "  修复：chown -R ${APP_UID}:${APP_GID} $STATIC_DIR $VAR_DIR && docker restart $CONTAINER"
+fi
 
 # 2) 配置文件（首次自动生成，已存在则保留，不覆盖你的修改）
 if [ ! -f "$ENV_FILE" ]; then
@@ -147,9 +291,20 @@ else
   c_blue "→ 复用已有配置 $ENV_FILE"
 fi
 
-if grep -q 'yourdomain.com' "$ENV_FILE"; then
-  c_red "⚠ 提醒：$ENV_FILE 里 PUBLIC_BASE_URL 还是占位域名，请改成真实 HTTPS 域名后再上线。"
+# 2.1) 回填 PUBLIC_BASE_URL（优先级：PUBLIC_BASE_URL > DOMAIN > 配置文件里的现值）
+#      这一项配错的典型现象：合成成功，但小程序报 downloadFile:fail
+TARGET_URL="${PUBLIC_BASE_URL:-}"
+if [ -z "$TARGET_URL" ] && [ -n "$DOMAIN" ]; then
+  _d="${DOMAIN#http://}"; _d="${_d#https://}"; _d="${_d%%/*}"
+  TARGET_URL="https://${_d}"
 fi
+if [ -n "$TARGET_URL" ]; then
+  apply_public_base_url "$TARGET_URL"
+fi
+
+# 2.2) 自检对外地址（占位域名 / http / 未配置）
+_pb_ok=1
+check_public_base_url || _pb_ok=0
 
 # 3) 登录 GHCR（仅在提供了凭据时）
 if [ -n "$GHCR_TOKEN" ]; then
@@ -207,15 +362,32 @@ done
 # 7) 清理旧镜像（保留最近使用的）
 docker image prune -f >/dev/null 2>&1 || true
 
+# 8) 运行期自检：直接读 /health 的 warnings 字段（这些坑都是“跑得起来但功能不正常”）
+c_blue "→ 运行期自检（/health）"
+_health_json="$(curl -fsS "http://127.0.0.1:${HOST_PORT}/health" || true)"
+echo "  $_health_json"
+case "$_health_json" in
+  *'"warnings":[]'*) c_green "✓ 自检通过（无配置告警）" ;;
+  *) c_yellow "⚠ 自检有告警，看上面 warnings 字段（最常见的还是 PUBLIC_BASE_URL）" ;;
+esac
+
 echo
 c_green "=== 部署完成 ==="
 echo "  健康检查 : http://127.0.0.1:${HOST_PORT}/health"
 echo "  接口文档 : http://127.0.0.1:${HOST_PORT}/docs"
 echo "  静态 PDF : $STATIC_DIR/pdfs"
 echo
+if [ "${_pb_ok:-1}" = "0" ]; then
+  c_red "⚠ 注意：PUBLIC_BASE_URL 尚未配置正确 —— 接口能合成，但小程序下载 PDF 会失败。"
+  echo "  一行修复：./docker-deploy.sh --set-domain 你的域名"
+  echo
+fi
 echo "  下一步（如果还没配 Nginx/HTTPS）："
-echo "    sudo cp deploy/nginx-docker.conf.example /etc/nginx/conf.d/aipdf.conf"
-echo "    sudo vim /etc/nginx/conf.d/aipdf.conf   # 改 server_name 与证书路径"
-echo "    sudo nginx -t && sudo systemctl reload nginx"
+echo "    方式一（推荐，一键完成域名 + 反向代理 + HTTPS）："
+echo "      sudo ./setup-domain.sh 你的域名.com -m 你的邮箱@example.com"
+echo "    方式二（手工）："
+echo "      sudo cp deploy/nginx-docker.conf.example /etc/nginx/conf.d/aipdf.conf"
+echo "      sudo vim /etc/nginx/conf.d/aipdf.conf   # 改 server_name 与证书路径"
+echo "      sudo nginx -t && sudo systemctl reload nginx"
 echo
-echo "  常用命令：./docker-deploy.sh --logs | --status | --restart | --uninstall"
+echo "  常用命令：./docker-deploy.sh --logs | --status | --set-domain <域名> | --fix-perms | --restart | --uninstall"

@@ -191,9 +191,27 @@ curl -X POST https://yourdomain.com/api/v1/convert-to-pdf-by-ids \
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/health` | 健康检查，返回实际生效的 PDF 引擎 |
+| GET | `/health` | 健康检查，返回实际生效的 PDF 引擎、`public_base_url` 与 **`warnings` 自检告警** |
 | GET | `/docs` | Swagger UI（可直接在浏览器里拖图片调试） |
 | GET | `/static/pdfs/<file>.pdf` | 静态文件服务，外部可直接访问生成的 PDF |
+
+`/health` 同时是**自检接口**（部署脚本与 `check-server.ps1` 都读它）：
+
+```json
+{
+  "status": "ok",
+  "app": "AI 拍纸立得 API",
+  "version": "1.0.0",
+  "pdf_engine": "pymupdf",
+  "public_base_url": null,
+  "warnings": [
+    "未配置 PUBLIC_BASE_URL：将按请求 Host 推导对外地址…",
+    "STATIC_DIR=/app/static 不可写（当前 uid=10001）：上传/合成会返回 STORAGE_NOT_WRITABLE…"
+  ]
+}
+```
+
+`warnings` 非空就属于「服务起得来、但功能不正常」，优先处理。
 
 ### 错误响应（统一结构）
 
@@ -212,7 +230,7 @@ curl -X POST https://yourdomain.com/api/v1/convert-to-pdf-by-ids \
 | 400 | `IMAGE_TOO_SMALL` | 分辨率低于 `MIN_IMAGE_SIDE` |
 | 413 | `FILE_TOO_LARGE` / `TOTAL_TOO_LARGE` / `REQUEST_TOO_LARGE` | 单张 / 总量 / 请求体超限 |
 | 415 | `UNSUPPORTED_TYPE` | 伪装成图片的非图片文件（按文件头识别） |
-| 500 | `PDF_BUILD_FAILED` / `INTERNAL_ERROR` | 合成失败 / 未捕获异常 |
+| 500 | `PDF_BUILD_FAILED` / `STORAGE_NOT_WRITABLE` / `INTERNAL_ERROR` | 合成失败 / 存储目录不可写（挂载权限）/ 未捕获异常 |
 
 ---
 
@@ -221,7 +239,7 @@ curl -X POST https://yourdomain.com/api/v1/convert-to-pdf-by-ids \
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `DEBUG` | `false` | 开启后热重载 + DEBUG 日志 |
-| `PUBLIC_BASE_URL` | 空 | **生产必填**，如 `https://yourdomain.com`；留空则按请求 Host 推导 |
+| `PUBLIC_BASE_URL` | 空 | **生产必填**，如 `https://yourdomain.com`；留空则按请求 Host 推导。填错/不填的后果：`/health` 的 `warnings` 会报，接口返回的 `pdf_url` 不可访问，小程序报 `downloadFile:fail` |
 | `STATIC_DIR` | `./static` | 静态根目录 |
 | `PDF_SUBDIR` | `pdfs` | PDF 存放子目录 |
 | `VAR_DIR` | `./var` | 运行时目录（暂存上传原图，不对外暴露） |
@@ -297,11 +315,21 @@ powershell -ExecutionPolicy Bypass -File .\scripts\dev-server.ps1   # 起后端�
 ```js
 const ENV = 'local';          // 开发者工具模拟器（http://127.0.0.1:8000）
 const ENV = 'local-device';   // 真机预览，需同时把 LAN_IP 改成电脑的局域网 IP
+const ENV = 'server';         // 本地连【已部署服务器】调试（HTTPS 域名，代码仍是调试态）
 const ENV = 'prod';           // 上线：HTTPS 域名 + 小程序后台白名单
 ```
 
 本地不需要创建 `.env`：`PUBLIC_BASE_URL` 未配置时后端会按请求的 Host 推导，
 所以模拟器拿到 `http://127.0.0.1:8000/...`、真机拿到 `http://<局域网IP>:8000/...`，两边都能正常下载。
+
+**先跑服务器链路自检，再去开发者工具**（能提前把网络/域名/权限问题与前端问题分开）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\check-server.ps1                            # 默认打 https://aipdf.seveninfo.cn
+powershell -ExecutionPolicy Bypass -File .\scripts\check-server.ps1 -BaseUrl https://你的域名 -Keep
+```
+
+它会自动造测试图 → 分张上传 → 合并 → 下载 PDF，并校验文件头与 `pdf_url` 的域名是否与后端一致。
 
 ### 5.4 其他要点
 
@@ -310,6 +338,79 @@ const ENV = 'prod';           // 上线：HTTPS 域名 + 小程序后台白名�
 **漏配 `uploadFile` 会报 `uploadFile:fail url not in domain list`**）。
 2. 极简版调用示例（一个文件看完）见 `examples/miniapp-api.js`。
 3. 上传前压缩很重要：`wx.compressImage` 把每张图控在 1MB 左右，再传才稳。
+4. **隐私协议**：`wx.chooseMedia` / 相机属于敏感接口，必须先在「微信公众平台 → 设置 →
+   服务内容声明 → 用户隐私保护指引」里声明「选中的照片或视频信息」与「摄像头」，
+   否则真机调用会直接失败或审核被驳回。
+
+### 5.5 小程序发布上线（完整流程）
+
+**第 0 步：后台准备**
+
+| 位置 | 要做什么 |
+| --- | --- |
+| 开发管理 → 开发设置 → 服务器域名 | 三个都填 `https://aipdf.seveninfo.cn`：`request` / `uploadFile` / `downloadFile` |
+| 设置 → 基本设置 → 服务类目 | 选「工具 → 其他工具」之类，与“图片转 PDF”相符 |
+| 设置 → 服务内容声明 → 用户隐私保护指引 | 声明「选中的照片或视频信息」+「摄像头」 |
+| 设置 → 基本设置 → 小程序名称/头像 | 正式上线前完善，审核会看 |
+
+> 域名必须**已备案**且为 **HTTPS**；带端口、IP、或用 http 都不行。
+
+**第 1 步：代码切到正式环境**（四改）
+
+```js
+// miniapp/pages/index/index.js
+const ENV = 'prod';
+const PROD_BASE_URL = 'https://aipdf.seveninfo.cn';
+```
+
+```js
+// miniapp/app.js
+const ENV = 'prod';
+```
+
+```jsonc
+// miniapp/project.config.json（上线前必须改回 true）
+"urlCheck": true
+```
+
+并确认服务器 `/opt/aipdf/aipdf.env` 里 `PUBLIC_BASE_URL=https://aipdf.seveninfo.cn`。
+
+**第 2 步：真机验证**
+
+```powershell
+# 本地先跑一遍服务器链路（应全绿）
+powershell -ExecutionPolicy Bypass -File .\scripts\check-server.ps1
+```
+
+开发者工具 → 【真机调试】/【预览】扫码 → 手机上把 `urlCheck=true` 下的域名白名单路径也走一遍：
+选图 → 生成 → 预览 PDF → 右上角“保存到手机”。这一步能发现**只有真机才有**的问题（隐私协议、白名单、TLS）。
+
+**第 3 步：上传代码**
+
+开发者工具右上角 **【上传】** → 填版本号（如 `1.0.0`）与项目备注 → 确定。
+上传前工具栏里会显示包体积，本项目无图片资源依赖，通常远小于 2MB 限制。
+
+**第 4 步：提交审核 → 发布**
+
+微信公众平台 → **版本管理** → 开发版本 → 【提交审核】：
+
+1. 填写功能页面路径（`pages/index/index`）与功能描述（写清楚“拍照/选图合成 A4 PDF，可预览与转发”）
+2. 补充材料：若审核员看不懂可用，传一段操作录屏或截图
+3. 审核通过后 →【发布】（可选择全量发布或灰度）
+
+**第 5 步：发布后回归**
+
+```powershell
+# 线上版在手机上的真实路径再跑一遍（这次不用开发者工具）
+# 手机上打开小程序 → 选 2 张图 → 生成 → 预览 → 保存
+```
+
+同时看服务器日志确认请求正常到达：
+
+```bash
+docker logs -f --tail=200 aipdf
+tail -f /var/log/nginx/aipdf.access.log
+```
 
 ---
 
@@ -344,17 +445,36 @@ lint + pytest  →  docker build  →  推送 ghcr.io/hieedaniel/aipdf  →  启
 ```bash
 # 在服务器上
 chmod +x docker-deploy.sh
-sudo ./docker-deploy.sh                       # 首次部署（生成 /opt/aipdf/aipdf.env）
-sudo vim /opt/aipdf/aipdf.env                 # 改 PUBLIC_BASE_URL 为真实 HTTPS 域名
-sudo ./docker-deploy.sh                       # 改完配置重启生效
+sudo DOMAIN=aipdf.example.com ./docker-deploy.sh   # 首次部署（自动生成 /opt/aipdf/aipdf.env 并回填 PUBLIC_BASE_URL）
 
-sudo ./docker-deploy.sh --status              # 查状态 + 健康检查
+sudo ./docker-deploy.sh --status              # 查状态 + 配置 + 健康检查（含自检告警）
 sudo ./docker-deploy.sh --logs                # 看日志
+sudo ./docker-deploy.sh --set-domain aipdf.example.com   # 只改域名：回填 + 重建容器
+sudo ./docker-deploy.sh --fix-perms           # 上传 500 / Permission denied 时用
 sudo ./docker-deploy.sh --uninstall           # 卸载（数据保留）
 ```
 
-脚本做的事：建目录 → 生成默认 `.env` → 拉镜像 → 替换容器 → 等 `/health` 就绪 → 清理旧镜像。
-配套 Nginx 配置见 `deploy/nginx-docker.conf.example`。
+脚本做的事：建目录并修正属主 → 生成/复用 `.env` → **回填并校验 `PUBLIC_BASE_URL`** → 拉镜像 →
+替换容器 → 等 `/health` 就绪 → 运行期自检 → 清理旧镜像。
+
+> 容器内以非 root 用户（uid 10001）运行，静态/暂存目录的宿主机属主必须是 10001，
+> 否则上传与合成会报 `STORAGE_NOT_WRITABLE` / `Permission denied`。新版脚本每次部署都会自动
+> `chown`，也可单独跑 `--fix-perms` 修复。
+
+> `PUBLIC_BASE_URL` 忘了改是**最高频、最难查**的故障：合成明明成功，小程序却报
+> `downloadFile:fail timeout`。所以现在忘了改会有一整套告警护送：
+> 部署时红字报错 → `/health` 的 `warnings` 字段 → `check-server.ps1` 直接定位。
+
+**绑定域名（推荐一键脚本）**，自动装 Nginx → 写反代配置 → 签 Let's Encrypt 证书 → 回填
+`PUBLIC_BASE_URL` → 重建容器：
+
+```bash
+sudo ./setup-domain.sh aipdf.example.com -m you@example.com
+sudo ./setup-domain.sh --status        # 查看域名 / 证书 / 健康状态
+sudo ./setup-domain.sh --renew         # 手动续期
+```
+
+手工配置可参考 `deploy/nginx-docker.conf.example`。
 
 **端口约定（避免与服务器上已有服务冲突）：**
 
@@ -375,6 +495,9 @@ sudo ./docker-deploy.sh --uninstall           # 卸载（数据保留）
 `mv .env.example .env && docker compose up -d`。
 
 ### 6.3 Nginx（关键片段）
+
+> 直接跑 `sudo ./setup-domain.sh <域名> -m <邮箱>` 就会生成下面这份配置并签好证书，
+> 无需手改。下面片段仅供理解原理 / 手工配置时参考。
 
 ```nginx
 server {
@@ -444,7 +567,7 @@ OCR 去水印等），只要返回一个 RGB 的 `PIL.Image` 即可，后续合�
 ## 8. 测试
 
 ```bash
-python -m pytest            # 41 passed
+python -m pytest            # 52 passed, 1 skipped（Windows/root 下无法模拟只读目录）
 python -m ruff check .      # All checks passed!
 ```
 
@@ -464,8 +587,35 @@ base64 入口（含 data URL 前缀）、分张上传→合并全流程、`image
 打开 `requirements.txt` 里的 `pillow-heif`，并在 `app/services/image_utils.py` 顶部加
 `from pillow_heif import register_heif_opener; register_heif_opener()`。
 
-**Q：返回的 `pdf_url` 是 `http://127.0.0.1:8000/...`？**
-没配 `PUBLIC_BASE_URL`，且反代没传 `X-Forwarded-Proto`。显式配置域名最稳，也能避免 Host 头伪造。
+**Q：返回的 `pdf_url` 是 `http://127.0.0.1:8000/...` 或 `https://yourdomain.com/...`？**
+没配/没改 `PUBLIC_BASE_URL`。填错的表现很好辨认：**服务器日志显示合成成功，但小程序报
+`downloadFile:fail timeout`**（客户端去下载了一个不存在的域名）。
+
+```bash
+cd /opt/aipdf && sudo ./docker-deploy.sh --set-domain aipdf.example.com   # 回填 + 重建容器
+curl -s http://127.0.0.1:19530/health                                      # 看 warnings 字段
+```
+
+> `docker restart` 不会重读 `--env-file`，必须重建容器。
+> 本地侧跑 `powershell -File scripts\check-server.ps1` 能直接判定（比对 `pdf_url` 的域名）。
+
+**Q：合成成功，但小程序报 `downloadFile:fail timeout`？**
+按可能性排序：①上面的 `PUBLIC_BASE_URL` 不对；②域名没加进后台的
+`downloadFile 合法域名`；③静态目录 Nginx 没配到（`/static/` alias）——
+在服务器上 `curl -o a.pdf https://aipdf.seveninfo.cn/static/pdfs/某个文件.pdf` 一试就知道。
+
+**Q：上传/合成报 500，日志里是 `Permission denied`？**
+
+容器内以非 root 用户 `appuser`（uid 10001）运行，而 bind mount 的宿主机目录由 root 创建，
+所以写不进去。一条命令修好（新版 `docker-deploy.sh` 已自动处理）：
+
+```bash
+chown -R 10001:10001 /opt/aipdf/static /opt/aipdf/var && docker restart aipdf
+```
+
+或直接跑 `sudo ./docker-deploy.sh --fix-perms`（会打印属主、自动 `chown`、处理 SELinux，
+并在容器内以 uid 10001 实测写入）。接口层会返回 `STORAGE_NOT_WRITABLE` 而不是笼统的
+`INTERNAL_ERROR`。
 
 **Q：小程序提示"不在以下 request 合法域名列表中"？**
 域名要 HTTPS、已备案、并加入小程序后台白名单；本机调试可在开发者工具里勾选"不校验合法域名"。

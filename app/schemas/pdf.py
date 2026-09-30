@@ -92,3 +92,10 @@ class HealthResponse(BaseModel):
     app: str
     version: str
     pdf_engine: str
+    public_base_url: Optional[str] = Field(
+        default=None, description="实际生效的对外地址前缀（空表示按请求 Host 推导）"
+    )
+    warnings: List[str] = Field(
+        default_factory=list,
+        description="启动自检告警；非空表示“服务能跑但功能会不正常”，例如 PUBLIC_BASE_URL 未改",
+    )

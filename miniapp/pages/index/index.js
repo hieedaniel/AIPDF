@@ -12,28 +12,32 @@
 // ---------------------------------------------------------------------------
 
 // ===========================================================================
-//  环境配置：本地调试 / 真机调试 / 正式环境 三选一
+//  环境配置：本地调试 / 真机调试 / 连服务器调试 / 正式环境 四选一
 // ---------------------------------------------------------------------------
 //  'local'        微信开发者工具【模拟器】调试，后端跑在同一台电脑上
 //  'local-device' 真机预览 / 真机调试：手机必须和电脑连同一个 Wi-Fi
+//  'server'       本地连【已部署的服务器】调试：HTTPS 域名已通，代码仍是调试态
 //  'prod'         正式环境：必须 HTTPS，且已在“开发管理 → 服务器域名”配好白名单
 // ===========================================================================
-const ENV = 'local';
+const ENV = 'server';
 
-// 以下三个地址按需修改
+// 以下地址按需修改
 const LOCAL_BASE_URL = 'http://127.0.0.1:8000'; // 模拟器用
 const LAN_IP = '192.168.1.100'; // 真机用：改成你电脑的局域网 IP（运行 scripts/dev-server.ps1 会直接打印）
-const PROD_BASE_URL = 'https://api.yourdomain.com'; // 上线前替换成你的正式域名
+const SERVER_BASE_URL = 'https://aipdf.seveninfo.cn'; // 已部署服务器（ENV='server' 时用）
+const PROD_BASE_URL = 'https://aipdf.seveninfo.cn'; // 正式域名（ENV='prod' 时用）
 
-const BASE_URL =
-  ENV === 'prod'
-    ? PROD_BASE_URL
-    : ENV === 'local-device'
-      ? `http://${LAN_IP}:8000`
-      : LOCAL_BASE_URL;
+const BASE_URLS = {
+  local: LOCAL_BASE_URL,
+  'local-device': `http://${LAN_IP}:8000`,
+  server: SERVER_BASE_URL,
+  prod: PROD_BASE_URL,
+};
+const BASE_URL = BASE_URLS[ENV] || LOCAL_BASE_URL;
 
-// 只要 ENV === 'local' / 'local-device'，就必须在开发者工具里勾选
-// 「详情 → 本地设置 → 不校验合法域名、web-view（业务域名）、TLS 版本以及 HTTPS 证书」
+// ENV = 'local' / 'local-device' / 'server' 都算调试态：
+//   开发者工具里需勾选「详情 → 本地设置 → 不校验合法域名、web-view（业务域名）、TLS 版本以及 HTTPS 证书」
+//   （ENV='server' 时若域名已加入小程序后台白名单，也可以不勾选，更贴近正式环境）
 const IS_LOCAL = ENV !== 'prod';
 
 const API = {
@@ -64,7 +68,8 @@ Page({
     pageMode: 'fit', // fit=每图一页，split=长图自动分页
     generating: false, // 合成中：禁用所有按钮，避免重复提交
     progressText: '', // 显示在主按钮上的进度文案
-    isLocal: IS_LOCAL, // 本地调试时在顶部展示当前后端地址
+    isLocal: IS_LOCAL, // 调试态时在顶部展示当前后端地址
+    env: ENV, // 当前环境，便于在 WXML 里做条件渲染
     baseUrl: BASE_URL,
   },
 
@@ -395,16 +400,22 @@ Page({
       FILE_TOO_LARGE: '图片过大，请压缩后再试',
       TOTAL_TOO_LARGE: '图片总大小超限，请减少张数',
       REQUEST_TOO_LARGE: '上传内容过大，请减少张数或压缩图片',
+      STORAGE_NOT_WRITABLE: '服务器存储目录不可写，请联系管理员检查挂载权限',
     };
 
     let content = hints[code] || (err && err.message) || '请稍后重试';
 
-    // 本地调试最常见的就是后端没启动 / 端口不对，直接给出可操作提示
+    // 调试态最常见的就是后端没起 / 端口不对 / 域名没加白名单，直接给出可操作提示
     if (IS_LOCAL && /网络|request:fail|downloadFile:fail/i.test(content)) {
-      content = `连不上后端（${BASE_URL}）\n` +
-        '1) 后端是否已启动：python main.py\n' +
-        '2) 是否勾选「不校验合法域名…」\n' +
-        '3) 浏览器打开 ' + BASE_URL + '/health 试试';
+      content = ENV === 'server'
+        ? `连不上服务器（${BASE_URL}）\n` +
+          `1) 浏览器打开 ${BASE_URL}/health 是否正常\n` +
+          '2) 是否勾选「不校验合法域名…」，或域名已加入后台白名单\n' +
+          '3) 云服务器安全组是否放行 443'
+        : `连不上后端（${BASE_URL}）\n` +
+          '1) 后端是否已启动：python main.py\n' +
+          '2) 是否勾选「不校验合法域名…」\n' +
+          '3) 浏览器打开 ' + BASE_URL + '/health 试试';
     }
 
     console.error('[AI拍纸立得] 生成失败', code, err);

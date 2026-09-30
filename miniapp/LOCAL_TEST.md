@@ -15,6 +15,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\dev-server.ps1
 
 跑完这三步就能点【生成 PDF 并预览】了。下面是细节与排错。
 
+> **后端已经部署到服务器了？** 那就不用跑本地后端，直接看 **第 1.5 节：连服务器调试**
+> （`ENV = 'server'` + `scripts\check-server.ps1` 自检）。
+
 ---
 
 ## 1. 启动后端
@@ -55,6 +58,64 @@ Invoke-RestMethod http://127.0.0.1:8000/health
 # status : ok
 # pdf_engine : pymupdf       ← 实际生效的引擎
 ```
+
+---
+
+## 1.5 直接连【已部署的服务器】调试（不想跑本地后端时）
+
+后端已经部署到 `https://aipdf.seveninfo.cn` 了，本地就不用再起 uvicorn。
+
+### 先做服务器链路自检（强烈建议，能提前分出“网络问题”和“前端问题”）
+
+```powershell
+cd "D:\01 Project\02练习项目\AIPDF"
+powershell -ExecutionPolicy Bypass -File .\scripts\check-server.ps1
+# 换域名 / 保留测试文件：
+#   ...\check-server.ps1 -BaseUrl https://aipdf.seveninfo.cn -Count 3 -Keep
+```
+
+它会自动：生成测试图 → `/health` → `http→https` 跳转 → 分张上传 → 合并 → 下载 PDF，
+并校验文件头是不是 `%PDF-`、`pdf_url` 的域名是否与后端一致。
+
+看到 `全部通过 ✓` 才继续；否则它会直接告诉你该改哪里（例如容器内写权限、`PUBLIC_BASE_URL`）。
+
+### 小程序改成连服务器
+
+```js
+// miniapp/pages/index/index.js
+const ENV = 'server';                                  // ← 改这里
+const SERVER_BASE_URL = 'https://aipdf.seveninfo.cn';   // 已填好
+```
+
+```js
+// miniapp/app.js（保持同步，避免两面不一致）
+const ENV = 'server';
+```
+
+然后：
+
+- 开发者工具 → 详情 → 本地设置 → **仍然勾选**「不校验合法域名…」（最省事）
+- 或者：先去小程序后台把域名加进 `request` / `uploadFile` / `downloadFile` 白名单，
+  这样本地就能**不勾选**也跑通，与正式环境行为一致（推荐上线前这么测一次）
+
+### 此刻应该看到
+
+页面顶部紫色卡片里多一行小字：
+
+```
+调试 · server · https://aipdf.seveninfo.cn
+```
+
+**看到这行就说明连的是服务器，而不是你本机。**点【生成 PDF 并预览】时应依次看到
+`上传中 1/2` → `正在合成…` → `正在下载…`，最后弹出 PDF 预览。
+
+### 三个常见坑
+
+| 现象 | 原因 |
+| --- | --- |
+| 弹窗提示「连不上服务器」 | 域名解析/安全组 443 未开；先在手机浏览器打开 `/health` 试 |
+| `downloadFile:fail url not in domain list` | 没勾「不校验合法域名」，且域名也不在白名单 |
+| 生成的 PDF 存在但打不开 | 服务器 `PUBLIC_BASE_URL` 不对，`pdf_url` 指向了别的主机 → 用 `check-server.ps1` 会直接报出来 |
 
 ---
 
@@ -193,9 +254,12 @@ python -c "import fitz;d=fitz.open(sorted(__import__('glob').glob('static/pdfs/*
 
 ## 8. 测试完、上线前要改回来的地方
 
-- [ ] `miniapp/pages/index/index.js`：`ENV = 'prod'`，并把 `PROD_BASE_URL` 换成真实域名
-- [ ] `miniapp/app.js`：`ENV` 与 `BASE_URLS.prod` 同步改掉
-- [ ] `miniapp/project.config.json`：`"urlCheck": false` → `true`
-- [ ] 后端 `AIPDF/.env`：`PUBLIC_BASE_URL=https://yourdomain.com`
-- [ ] 小程序后台「开发管理 → 开发设置 → 服务器域名」：把域名加入 `request`、`uploadFile`、`downloadFile` 三类白名单（本项目用 `wx.uploadFile`，漏配会报 `uploadFile:fail url not in domain list`）
+- [ ] `miniapp/pages/index/index.js`：`ENV = 'prod'`，并确认 `PROD_BASE_URL = 'https://aipdf.seveninfo.cn'`
+- [ ] `miniapp/app.js`：`ENV` 与 `BASE_URLS` 同步改掉
+- [ ] `miniapp/project.config.json`：`"urlCheck": false` → `true`（**上线必须**）
+- [ ] 服务器 `/opt/aipdf/aipdf.env`：`PUBLIC_BASE_URL=https://aipdf.seveninfo.cn`
+- [ ] 服务器 `/opt/aipdf/static`、`/opt/aipdf/var` 属主为 10001（否则上传报 500）
+- [ ] 小程序后台「开发管理 → 开发设置 → 服务器域名」：域名加入 `request`、`uploadFile`、`downloadFile` 三类白名单（漏配 `uploadFile` 会报 `uploadFile:fail url not in domain list`）
+- [ ] 小程序后台「设置 → 服务内容声明 → 用户隐私保护指引」：声明「选中的照片或视频信息」+「摄像头」
+- [ ] 先跑 `powershell -File .\scripts\check-server.ps1` 全绿，再用真机调试跑一遍，最后上传审核
 - [ ] 后台 CORS 收紧：`CORS_ALLOW_ORIGINS`（小程序不受 CORS 限制，但 H5 端需要）

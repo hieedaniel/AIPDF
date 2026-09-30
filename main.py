@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.background import cleanup as cleanup_worker
 from app.config import settings
+from app.core import diagnostics
 from app.core.exceptions import register_exception_handlers
 from app.routers import convert
 from app.schemas.pdf import HealthResponse
@@ -48,6 +49,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("暂存目录      : %s", settings.upload_dir)
     logger.info("公网地址      : %s", settings.public_base_url or "（未配置，按请求 Host 推导）")
     logger.info("CORS 白名单   : %s", settings.cors_origins_list)
+    for warning in diagnostics.collect(force=True):
+        logger.warning("配置自检      : %s", warning)
+    if not diagnostics.collect():
+        logger.info("配置自检      : 通过")
     logger.info("=" * 62)
 
     task, stop_event = cleanup_worker.start_cleanup_task(settings)
@@ -162,6 +167,8 @@ async def health() -> HealthResponse:
         app=settings.app_name,
         version=settings.app_version,
         pdf_engine=pdf_builder.resolve_engine(settings.pdf_engine),
+        public_base_url=settings.public_base_url,
+        warnings=diagnostics.collect(),
     )
 
 

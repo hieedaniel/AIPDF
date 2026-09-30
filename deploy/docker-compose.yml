@@ -25,6 +25,10 @@ services:
       # 宿主机端口 19530（避开已被占用的 8000）；容器内固定 8000
       - "127.0.0.1:19530:8000"
     volumes:
+      # 容器内以非 root 用户运行（uid 10001），首次创建后必须让目录归它所有，
+      # 否则上传/生成会报 Permission denied（500 / PDF_BUILD_FAILED）：
+      #   mkdir -p static/pdfs var/uploads
+      #   sudo chown -R 10001:10001 static var
       - ./static:/app/static      # 生成的 PDF，Nginx 需要能读到
       - ./var:/app/var            # 分张上传的暂存原图
     logging:

@@ -28,6 +28,9 @@ def test_health(client):
     body = resp.json()
     assert body["status"] == "ok"
     assert body["pdf_engine"] in ("pymupdf", "reportlab")
+    # /health 必须白送自检结果，部署脚本与 check-server.ps1 靠它发现“能跑但功能不对”
+    assert "warnings" in body and isinstance(body["warnings"], list)
+    assert "public_base_url" in body
 
 
 def test_convert_multiple_images_keeps_order_and_pages(client):
@@ -291,3 +294,21 @@ def test_staged_images_are_not_publicly_served(client):
         assert client.get(path).status_code == 404
 
     Path(settings.upload_dir, image_id + ".jpg").unlink(missing_ok=True)
+
+
+def test_permission_error_is_reported_as_storage_not_writable(client, monkeypatch):
+    """存储目录不可写时，不能只回一个笼统的 INTERNAL_ERROR。
+
+    真实场景：bind mount 的宿主机目录属主与容器内 uid 不一致，
+    PIL 落盘时抛 PermissionError，小程序端应该能直接看懂。
+    """
+    from app.services import storage
+
+    def boom(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(storage, "new_upload_path", boom)
+    resp = client.post(UPLOAD_URL, files={"file": ("p.jpg", make_image((400, 400)), "image/jpeg")})
+    assert resp.status_code == 500
+    assert resp.json()["code"] == "STORAGE_NOT_WRITABLE"
+    assert "不可写" in resp.json()["message"]
