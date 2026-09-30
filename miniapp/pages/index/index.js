@@ -405,8 +405,21 @@ Page({
 
     let content = hints[code] || (err && err.message) || '请稍后重试';
 
-    // 调试态最常见的就是后端没起 / 端口不对 / 域名没加白名单，直接给出可操作提示
-    if (IS_LOCAL && /网络|request:fail|downloadFile:fail/i.test(content)) {
+    // 域名白名单：开发者工具/真机调试里勾了「不校验合法域名」就能跑，
+    // 但【预览】一定校验 —— 手机上最常见的坑，直接给出该去后台填什么。
+    const host = BASE_URL.replace(/^https?:\/\//, '');
+    if (/uploadFile:fail|not in domain list|不在以下 .*(uploadFile|downloadFile|request)/i.test(content)) {
+      const kind = /uploadFile/i.test(content)
+        ? '上传合法域名（uploadFile）'
+        : /downloadFile/i.test(content)
+          ? '下载合法域名（downloadFile）'
+          : 'request 合法域名';
+      content =
+        `手机上会校验域名白名单（${kind}），开发者工具里的「不校验合法域名」对【预览】不生效。\n` +
+        `去小程序后台配置：开发管理 → 开发设置 → 服务器域名\n` +
+        `request / uploadFile / downloadFile 三栏都填：https://${host}\n` +
+        '保存后重新预览即可（不用重新上传代码）。';
+    } else if (IS_LOCAL && /网络|request:fail|downloadFile:fail/i.test(content)) {
       content = ENV === 'server'
         ? `连不上服务器（${BASE_URL}）\n` +
           `1) 浏览器打开 ${BASE_URL}/health 是否正常\n` +
