@@ -6,13 +6,14 @@
 #   sudo vim /etc/nginx/conf.d/aipdf.conf      # 改 server_name / 证书路径
 #   sudo nginx -t && sudo systemctl reload nginx
 #
-# 前提：容器以 -p 127.0.0.1:8000:8000 运行，静态目录挂载在 /opt/aipdf/static
+# 前提：容器以 -p 127.0.0.1:19530:8000 运行（避开已被占用的 8000），静态目录挂载在 /opt/aipdf/static
 # 证书可用 certbot 一键签发：
 #   sudo certbot --nginx -d pdf.yourdomain.com
 # ==============================================================================
 
 upstream aipdf_backend {
-    server 127.0.0.1:8000;
+    # 对应 docker-deploy.sh 里的 HOST_PORT（默认 19530）；若改过端口这里也要同步
+    server 127.0.0.1:19530;
     keepalive 32;
 }
 

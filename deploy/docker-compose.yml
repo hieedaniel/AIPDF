@@ -22,7 +22,8 @@ services:
       STATIC_DIR: /app/static
       VAR_DIR: /app/var
     ports:
-      - "127.0.0.1:8000:8000"
+      # 宿主机端口 19530（避开已被占用的 8000）；容器内固定 8000
+      - "127.0.0.1:19530:8000"
     volumes:
       - ./static:/app/static      # 生成的 PDF，Nginx 需要能读到
       - ./var:/app/var            # 分张上传的暂存原图

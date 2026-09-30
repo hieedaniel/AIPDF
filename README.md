@@ -354,7 +354,22 @@ sudo ./docker-deploy.sh --uninstall           # 卸载（数据保留）
 ```
 
 脚本做的事：建目录 → 生成默认 `.env` → 拉镜像 → 替换容器 → 等 `/health` 就绪 → 清理旧镜像。
-容器以 `127.0.0.1:8000` 暴露，配套 Nginx 配置见 `deploy/nginx-docker.conf.example`。
+配套 Nginx 配置见 `deploy/nginx-docker.conf.example`。
+
+**端口约定（避免与服务器上已有服务冲突）：**
+
+- 容器**内部**固定监听 `8000`，但每个容器有独立网络命名空间，不会和其它容器的 `8000` 互冲。
+- 真正会冲突的只有**宿主机端口**，脚本默认用 `BIND_ADDR=127.0.0.1` + `HOST_PORT=19530`，
+  即容器只在宿主机本地 `127.0.0.1:19530` 暴露，由 Nginx 反代；不占用公网 `8000`。
+- 部署前脚本会预检端口（docker 容器占用与非 docker 进程占用都会拦截），冲突时直接报错并提示换端口：
+
+  ```bash
+  HOST_PORT=19533 ./docker-deploy.sh      # 临时换端口
+  ```
+
+  > 改过端口的话，`deploy/nginx-docker.conf.example` 里 `upstream aipdf_backend` 的端口要同步改。
+- 想在宿主机直接访问容器（不用 Nginx）时，改成 `BIND_ADDR=0.0.0.0 HOST_PORT=19530 ./docker-deploy.sh`，
+  然后浏览器直连 `http://<服务器IP>:19530/health`。
 
 想用 compose 的话：`cp deploy/docker-compose.yml deploy/aipdf.env.example /opt/aipdf/` 后
 `mv .env.example .env && docker compose up -d`。
@@ -388,7 +403,7 @@ server {
 
 ```bash
 docker build -t aipdf .
-docker run -d --name aipdf -p 8000:8000 \
+docker run -d --name aipdf -p 127.0.0.1:19530:8000 \
   -e PUBLIC_BASE_URL=https://yourdomain.com \
   -v /data/aipdf/static:/app/static \
   -v /data/aipdf/var:/app/var \

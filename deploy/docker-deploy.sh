@@ -12,6 +12,10 @@
 # 首次部署前按需修改下面「配置区」，或用环境变量覆盖：
 #   IMAGE=ghcr.io/xxx/aipdf:v1.0.0 ./docker-deploy.sh
 #   PUBLIC_BASE_URL=https://pdf.example.com ./docker-deploy.sh
+#   HOST_PORT=19533 ./docker-deploy.sh          # 换宿主机端口（默认 19530）
+#
+# 关于端口：容器内固定监听 8000，但每个容器有独立网络命名空间，
+# 不会和其它容器的 8000 冲突；真正会冲突的只有「宿主机端口」，默认已避开 8000。
 # ==============================================================================
 set -euo pipefail
 
@@ -19,7 +23,7 @@ set -euo pipefail
 IMAGE="${IMAGE:-ghcr.io/hieedaniel/aipdf:latest}"   # 镜像地址（仓库名统一小写）
 CONTAINER="${CONTAINER:-aipdf}"                     # 容器名
 DATA_DIR="${DATA_DIR:-/opt/aipdf}"                  # 宿主机数据目录（静态 PDF / 临时文件 / 配置）
-HOST_PORT="${HOST_PORT:-8000}"                      # 容器 8000 映射到宿主机的端口
+HOST_PORT="${HOST_PORT:-19530}"                     # 宿主机端口（容器内固定 8000；避免与已有服务冲突）
 BIND_ADDR="${BIND_ADDR:-127.0.0.1}"                 # 只监听本机，由 Nginx 反代；想直接暴露改成 0.0.0.0
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-}"              # 【必填】如 https://pdf.example.com
 CORS_ALLOW_ORIGINS="${CORS_ALLOW_ORIGINS:-*}"       # H5 用；小程序不受 CORS 限制
@@ -50,6 +54,31 @@ need_docker() {
   fi
 }
 
+# 部署前预检宿主机端口，避免 docker run 时才发现 "port is already allocated"
+check_port_conflict() {
+  local conflicts
+  conflicts="$(docker ps --format '{{.Names}} {{.Ports}}' | grep -F ":${HOST_PORT}->" || true)"
+  # 重建时旧容器仍占着该端口，排除掉自己
+  conflicts="$(printf '%s\n' "$conflicts" | grep -v -E "^${CONTAINER}[[:space:]]" || true)"
+  if [ -n "$(printf '%s' "$conflicts" | tr -d '[:space:]')" ]; then
+    c_red "✗ 宿主机端口 ${HOST_PORT} 已被其它容器占用："
+    printf '%s\n' "$conflicts"
+    echo
+    echo "  换个端口重试，例如："
+    echo "    HOST_PORT=19533 ./docker-deploy.sh"
+    exit 1
+  fi
+
+  # 非 docker 进程占用（bind 也会失败）
+  if command -v ss >/dev/null 2>&1 && ss -lnt 2>/dev/null | grep -qE "[:.]${HOST_PORT}[[:space:]]"; then
+    c_red "✗ 宿主机端口 ${HOST_PORT} 已被非 Docker 进程占用："
+    ss -lntp 2>/dev/null | grep -E "[:.]${HOST_PORT}[[:space:]]" || true
+    echo
+    echo "  换个端口重试，例如：HOST_PORT=19533 ./docker-deploy.sh"
+    exit 1
+  fi
+}
+
 # ------------------------------- 子命令 ---------------------------------------
 case "${1:-}" in
   --logs)    docker logs -f --tail=200 "$CONTAINER"; exit 0 ;;
@@ -71,12 +100,13 @@ esac
 
 # ------------------------------- 正式部署 -------------------------------------
 need_docker
+check_port_conflict
 
 c_blue "=== AI 拍纸立得 部署开始 ==="
 echo "  镜像     : $IMAGE"
 echo "  容器名   : $CONTAINER"
 echo "  数据目录 : $DATA_DIR"
-echo "  监听     : ${BIND_ADDR}:${HOST_PORT} -> 8000"
+echo "  监听     : ${BIND_ADDR}:${HOST_PORT} -> 容器内 8000"
 
 # 1) 目录
 mkdir -p "$STATIC_DIR/pdfs" "$VAR_DIR/uploads"
