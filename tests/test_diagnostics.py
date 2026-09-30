@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -67,21 +66,45 @@ def test_writable_dirs_have_no_warning(tmp_path):
     assert not list((tmp_path / "static").glob(".write_probe"))
 
 
-def test_unwritable_dir_is_reported(tmp_path):
+def test_unwritable_dir_is_reported(tmp_path, monkeypatch):
+    """目录不可写必须被点名，并给出可操作的 chown 提示。
+
+    不依赖 POSIX 权限位：它在 Windows 上无效、在 root 下也无效（root 无视权限位），
+    所以直接让探针写入失败，两个平台行为一致。
+    """
     target = tmp_path / "static"
     target.mkdir()
-    target.chmod(0o500)  # r-x：不可写
-    try:
-        # root 无视权限位，CI 以 root 跑时跳过
-        if os.access(target, os.W_OK):
-            pytest.skip("当前用户对目录仍有写权限（例如 root），无法模拟不可写")
-        cfg = _cfg(static_dir=target, var_dir=target)
-        warnings = diagnostics.check_dirs(cfg)
-        assert len(warnings) == 1
-        assert "STORAGE_NOT_WRITABLE" in warnings[0]
-        assert "chown" in warnings[0]
-    finally:
-        target.chmod(0o700)
+    var = tmp_path / "var"  # 保持可写，确保只报 STATIC_DIR 一条
+    var.mkdir()
+
+    real_write_bytes = Path.write_bytes
+
+    def fake_write_bytes(self, data):
+        if self.name == ".write_probe" and self.parent == target:
+            raise PermissionError(13, "Permission denied")
+        return real_write_bytes(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", fake_write_bytes)
+
+    warnings = diagnostics.check_dirs(_cfg(static_dir=target, var_dir=var))
+    assert len(warnings) == 1
+    assert warnings[0].startswith("STATIC_DIR=")
+    assert "STORAGE_NOT_WRITABLE" in warnings[0]
+    assert "chown" in warnings[0]
+
+
+def test_dir_writable_uses_real_write_probe(tmp_path, monkeypatch):
+    """只读权限位不够：必须真的写一次（bind mount 场景权限位毫无意义）。"""
+    wrote: list[Path] = []
+    real_write_bytes = Path.write_bytes
+
+    def spy_write_bytes(self, data):
+        wrote.append(self)
+        return real_write_bytes(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", spy_write_bytes)
+    assert diagnostics.check_dirs(_cfg(static_dir=tmp_path / "s", var_dir=tmp_path / "v")) == []
+    assert [p.name for p in wrote] == [".write_probe", ".write_probe"]
 
 
 def test_collect_caches_until_reset(tmp_path):

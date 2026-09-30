@@ -567,7 +567,7 @@ OCR 去水印等），只要返回一个 RGB 的 `PIL.Image` 即可，后续合�
 ## 8. 测试
 
 ```bash
-python -m pytest            # 52 passed, 1 skipped（Windows/root 下无法模拟只读目录）
+python -m pytest            # 54 passed
 python -m ruff check .      # All checks passed!
 ```
 
