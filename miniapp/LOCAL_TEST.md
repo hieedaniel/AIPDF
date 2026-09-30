@@ -197,5 +197,5 @@ python -c "import fitz;d=fitz.open(sorted(__import__('glob').glob('static/pdfs/*
 - [ ] `miniapp/app.js`：`ENV` 与 `BASE_URLS.prod` 同步改掉
 - [ ] `miniapp/project.config.json`：`"urlCheck": false` → `true`
 - [ ] 后端 `AIPDF/.env`：`PUBLIC_BASE_URL=https://yourdomain.com`
-- [ ] 小程序后台「开发管理 → 开发设置 → 服务器域名」：把域名加入 `request` 与 `downloadFile` 白名单
+- [ ] 小程序后台「开发管理 → 开发设置 → 服务器域名」：把域名加入 `request`、`uploadFile`、`downloadFile` 三类白名单（本项目用 `wx.uploadFile`，漏配会报 `uploadFile:fail url not in domain list`）
 - [ ] 后台 CORS 收紧：`CORS_ALLOW_ORIGINS`（小程序不受 CORS 限制，但 H5 端需要）

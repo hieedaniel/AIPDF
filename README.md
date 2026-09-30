@@ -260,7 +260,7 @@ miniapp/
 
 1. 用微信开发者工具「导入项目」，目录选 `miniapp/`，AppID 填自己的（当前是 `touristappid` 测试号）。
 2. 把 `pages/index/index.js` 顶部的 `BASE_URL` 改成你的域名。
-3. 把域名加入「开发管理 → 开发设置 → 服务器域名」的 `request` 与 `downloadFile` 合法域名；
+3. 把域名加入「开发管理 → 开发设置 → 服务器域名」的 `request`、`uploadFile`、`downloadFile` 三类合法域名；
    本地调试可在工具里勾选“不校验合法域名”（`project.config.json` 中已设 `urlCheck: false`，**上线前改回 true**）。
 
 页面包含：顶部标题、3 列缩略图网格（点图预览、给角标看顺序、✕ 删除）、
@@ -306,7 +306,8 @@ const ENV = 'prod';           // 上线：HTTPS 域名 + 小程序后台白名�
 ### 5.4 其他要点
 
 1. **必须 HTTPS**，并在「微信公众平台 → 开发管理 → 开发设置 → 服务器域名」把域名加入
-   `request 合法域名` 与 `downloadFile 合法域名`。
+   `request 合法域名`、`uploadFile 合法域名` 与 `downloadFile 合法域名`（本项目用 `wx.uploadFile` 分张上传，
+**漏配 `uploadFile` 会报 `uploadFile:fail url not in domain list`**）。
 2. 极简版调用示例（一个文件看完）见 `examples/miniapp-api.js`。
 3. 上传前压缩很重要：`wx.compressImage` 把每张图控在 1MB 左右，再传才稳。
 
