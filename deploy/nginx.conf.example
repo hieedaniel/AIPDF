@@ -1,0 +1,64 @@
+# AI 拍纸立得 —— Nginx 反向代理示例
+# 复制到 /etc/nginx/conf.d/aipdf.conf 后：nginx -t && systemctl reload nginx
+#
+# 关键点：
+#   1. 必须 HTTPS（微信小程序要求）
+#   2. client_max_body_size 要 ≥ 后端 MAX_REQUEST_BODY_MB（默认 120MB）
+#   3. 传递 X-Forwarded-Proto，后端才能拼出正确的 https:// 公网链接
+#   4. /static/ 由 Nginx 直接返回，不经过 Python
+
+upstream aipdf_backend {
+    server 127.0.0.1:8000;
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    server_name yourdomain.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name yourdomain.com;
+
+    # ---- 证书（用 certbot 通常会自动写入这两行）----
+    ssl_certificate     /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    # ---- 上传体积 ----
+    client_max_body_size 150m;
+    client_body_timeout  120s;
+
+    # ---- 静态 PDF：由 Nginx 直出 ----
+    location /static/ {
+        alias /opt/aipdf/static/;
+        expires 1h;
+        add_header Cache-Control "public, max-age=3600";
+        add_header X-Content-Type-Options nosniff;
+        try_files $uri =404;
+    }
+
+    # ---- 接口 ----
+    location / {
+        proxy_pass http://aipdf_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 多图合成耗时与图片数量成正比，读超时要给够
+        proxy_connect_timeout 10s;
+        proxy_send_timeout    120s;
+        proxy_read_timeout    120s;
+
+        # 图片上传不要缓冲到磁盘再转发，直接流式传给后端
+        proxy_request_buffering off;
+    }
+
+    access_log /var/log/nginx/aipdf.access.log;
+    error_log  /var/log/nginx/aipdf.error.log warn;
+}

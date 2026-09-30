@@ -1,0 +1,26 @@
+[project]
+name = "aipdf"
+version = "1.0.0"
+description = "微信小程序「AI 拍纸立得」后端：多张图片合成 A4 PDF"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+# E501: 行长由 formatter 控制
+# B008: FastAPI 依赖注入必须写成 File(...) / Form(...) 形式
+# UP006/UP007/UP035/UP045: 保留 typing.Optional / List 写法，兼容旧版 Python 与团队习惯
+ignore = ["E501", "B008", "UP006", "UP007", "UP035", "UP045"]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试里允许 "预期抛出任意异常" 的断言写法
+"tests/*" = ["B017", "SIM117"]

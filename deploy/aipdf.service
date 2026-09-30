@@ -1,0 +1,46 @@
+# AI 拍纸立得 —— systemd 单元
+# 安装：
+#   sudo cp deploy/aipdf.service /etc/systemd/system/aipdf.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now aipdf
+#   sudo journalctl -u aipdf -f
+#
+# 前置：代码放在 /opt/aipdf，虚拟环境在 /opt/aipdf/.venv，配置在 /opt/aipdf/.env
+
+[Unit]
+Description=AI Paizhi Lide PDF Service (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/aipdf
+EnvironmentFile=-/opt/aipdf/.env
+
+# 单机建议：workers = CPU 核数（PDF 合成是 CPU 密集，多 worker 才能吃满多核）
+ExecStart=/opt/aipdf/.venv/bin/uvicorn main:app \
+    --host 127.0.0.1 --port 8000 \
+    --workers 2 \
+    --proxy-headers --forwarded-allow-ips=127.0.0.1 \
+    --timeout-keep-alive 30 \
+    --no-server-header
+
+Restart=always
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+# 资源限制：避免超大图把内存吃光（按机器规格调整）
+MemoryMax=2G
+LimitNOFILE=65535
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/aipdf/static
+
+[Install]
+WantedBy=multi-user.target

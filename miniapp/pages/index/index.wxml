@@ -1,0 +1,98 @@
+<!--pages/index/index.wxml-->
+<view class="page">
+
+  <!-- ============ 顶部标题 ============ -->
+  <view class="hero">
+    <view class="hero__title">AI 拍纸立得 - 图片转 PDF</view>
+    <view class="hero__sub">拍摄 / 选图 → 调整顺序 → 一键合成 A4 文档，可保存与转发</view>
+  </view>
+
+  <!-- ============ 已选图片网格 ============ -->
+  <view class="panel">
+    <view class="panel__head">
+      <text class="panel__title">已选图片</text>
+      <text class="panel__count">{{images.length}} / {{maxCount}}</text>
+    </view>
+
+    <!-- 空状态：整块可点击去选图 -->
+    <view class="empty" wx:if="{{!images.length}}" bindtap="chooseImages">
+      <view class="empty__icon">🖼</view>
+      <view class="empty__title">还没有选择图片</view>
+      <view class="empty__desc">点击这里，或下方「添加图片 / 拍照」</view>
+    </view>
+
+    <!-- 图片网格 -->
+    <view class="grid" wx:else>
+      <view class="cell" wx:for="{{images}}" wx:key="path">
+        <!-- 点击查看大图 -->
+        <image
+          class="cell__img"
+          src="{{item.path}}"
+          mode="aspectFill"
+          lazy-load
+          data-index="{{index}}"
+          bindtap="previewImage"
+        />
+        <!-- 序号，直观体现排版顺序 -->
+        <view class="cell__badge">{{index + 1}}</view>
+        <!-- 删除（catchtap 阻止冒泡，避免触发预览） -->
+        <view class="cell__del" data-index="{{index}}" catchtap="removeImage">✕</view>
+      </view>
+
+      <!-- 追加入口 -->
+      <view class="cell cell--add" wx:if="{{images.length < maxCount}}" bindtap="chooseImages">
+        <view class="cell__plus">＋</view>
+        <view class="cell__addtext">继续添加</view>
+      </view>
+    </view>
+  </view>
+
+  <!-- ============ 排版模式 ============ -->
+  <view class="panel">
+    <view class="panel__head">
+      <text class="panel__title">排版模式</text>
+    </view>
+    <view class="opts">
+      <view
+        class="opt {{pageMode === 'fit' ? 'opt--on' : ''}}"
+        data-mode="fit"
+        bindtap="onPageModeChange"
+      >
+        <view class="opt__name">每图一页</view>
+        <view class="opt__desc">每张照片独占一页 A4</view>
+      </view>
+      <view
+        class="opt {{pageMode === 'split' ? 'opt--on' : ''}}"
+        data-mode="split"
+        bindtap="onPageModeChange"
+      >
+        <view class="opt__name">长图分页</view>
+        <view class="opt__desc">长截图自动切成多页</view>
+      </view>
+    </view>
+  </view>
+
+  <!-- ============ 底部操作区 ============ -->
+  <view class="footer">
+    <view class="footer__meta" wx:if="{{images.length}}">
+      <text class="footer__hint">按上方序号顺序排版</text>
+      <text class="footer__clear" bindtap="clearAll">清空全部</text>
+    </view>
+
+    <button
+      class="btn btn--ghost"
+      hover-class="btn--hover"
+      disabled="{{generating}}"
+      bindtap="chooseImages"
+    >添加图片 / 拍照</button>
+
+    <button
+      class="btn btn--primary"
+      hover-class="btn--hover"
+      loading="{{generating}}"
+      disabled="{{generating || !images.length}}"
+      bindtap="generatePdf"
+    >{{generating ? (progressText || '生成中…') : '生成 PDF 并预览'}}</button>
+  </view>
+
+</view>

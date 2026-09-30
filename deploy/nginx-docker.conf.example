@@ -1,0 +1,81 @@
+# ==============================================================================
+# AI 拍纸立得 —— Nginx 反向代理（配合 Docker 部署使用）
+#
+# 安装：
+#   sudo cp deploy/nginx-docker.conf.example /etc/nginx/conf.d/aipdf.conf
+#   sudo vim /etc/nginx/conf.d/aipdf.conf      # 改 server_name / 证书路径
+#   sudo nginx -t && sudo systemctl reload nginx
+#
+# 前提：容器以 -p 127.0.0.1:8000:8000 运行，静态目录挂载在 /opt/aipdf/static
+# 证书可用 certbot 一键签发：
+#   sudo certbot --nginx -d pdf.yourdomain.com
+# ==============================================================================
+
+upstream aipdf_backend {
+    server 127.0.0.1:8000;
+    keepalive 32;
+}
+
+# HTTP 强制跳 HTTPS
+server {
+    listen 80;
+    listen [::]:80;
+    server_name pdf.yourdomain.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name pdf.yourdomain.com;
+
+    # ---- 证书 ----
+    ssl_certificate     /etc/letsencrypt/live/pdf.yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/pdf.yourdomain.com/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # 安全响应头
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options SAMEORIGIN always;
+
+    # ---- 上传体积（必须 ≥ 后端 MAX_REQUEST_BODY_MB，默认 120M）----
+    client_max_body_size 150m;
+    client_body_timeout  120s;
+
+    # ---- 静态 PDF：由 Nginx 直出，不经过 Python ----
+    # 路径要与 docker-deploy.sh 里的 DATA_DIR 保持一致（默认 /opt/aipdf）
+    location /static/ {
+        alias /opt/aipdf/static/;
+        expires 1h;
+        add_header Cache-Control "public, max-age=3600";
+        add_header X-Content-Type-Options nosniff;
+        try_files $uri =404;
+    }
+
+    # ---- 业务接口 ----
+    location / {
+        proxy_pass http://aipdf_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 多图合成耗时与图片数量成正比，超时给足
+        proxy_connect_timeout 10s;
+        proxy_send_timeout    120s;
+        proxy_read_timeout    120s;
+
+        # 图片直传后端，不落 Nginx 磁盘
+        proxy_request_buffering off;
+        client_body_buffer_size 1m;
+    }
+
+    access_log /var/log/nginx/aipdf.access.log;
+    error_log  /var/log/nginx/aipdf.error.log warn;
+}

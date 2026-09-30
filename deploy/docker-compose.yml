@@ -1,0 +1,43 @@
+# ==============================================================================
+# AI 拍纸立得 —— docker compose 部署（docker-deploy.sh 的等价替代）
+#
+# 用法：
+#   mkdir -p /opt/aipdf && cd /opt/aipdf
+#   cp docker-compose.yml . && cp aipdf.env.example .env   # 按需修改 .env
+#   docker compose up -d
+#   docker compose logs -f
+#
+# 只映射到 127.0.0.1，由宿主机 Nginx 反代并终止 TLS。
+# ==============================================================================
+
+services:
+  aipdf:
+    image: ${AIPDF_IMAGE:-ghcr.io/hieedaniel/aipdf:latest}
+    container_name: aipdf
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai
+      STATIC_DIR: /app/static
+      VAR_DIR: /app/var
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./static:/app/static      # 生成的 PDF，Nginx 需要能读到
+      - ./var:/app/var            # 分张上传的暂存原图
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

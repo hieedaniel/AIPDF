@@ -1,0 +1,36 @@
+# 统一换行符：避免在 Windows 上提交后，Linux 端脚本带上 CRLF 而无法执行
+* text=auto eol=lf
+
+# 明确需要 LF 的文件
+*.sh            text eol=lf
+*.py            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.json          text eol=lf
+*.md            text eol=lf
+*.txt           text eol=lf
+*.env           text eol=lf
+*.example       text eol=lf
+Dockerfile      text eol=lf
+.dockerignore   text eol=lf
+.gitignore      text eol=lf
+.gitattributes  text eol=lf
+
+# Windows 批处理必须 CRLF
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+*.ps1           text eol=crlf
+
+# 二进制文件不做任何转换
+*.pdf           binary
+*.jpg           binary
+*.jpeg          binary
+*.png           binary
+*.webp          binary
+*.gif           binary
+*.ico           binary
+*.woff          binary
+*.woff2         binary
+*.ttf           binary
+*.zip           binary
+*.gz            binary

@@ -1,0 +1,19 @@
+/* app.wxss —— 全局基础样式 */
+page {
+  box-sizing: border-box;
+  background: #f4f5f7;
+  font-size: 28rpx;
+  color: #1f2329;
+  -webkit-font-smoothing: antialiased;
+}
+
+view,
+text,
+image,
+button {
+  box-sizing: border-box;
+}
+
+image {
+  will-change: transform;
+}
