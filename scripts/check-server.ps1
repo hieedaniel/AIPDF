@@ -48,6 +48,10 @@ function W-Step($m) { Write-Host ""; Write-Host "=== $m ===" -ForegroundColor Cy
 # 取出 500 响应体（Invoke-RestMethod 在非 2xx 时会抛异常，正文里才有业务错误码）
 function Get-ErrBody($err) {
     try {
+        # PS 5.1：Invoke-RestMethod / Invoke-WebRequest 的错误正文在这里最好取
+        if ($err.ErrorDetails -and $err.ErrorDetails.Message) { return $err.ErrorDetails.Message }
+    } catch { }
+    try {
         $resp = $err.Exception.Response
         if (-not $resp) { return '' }
         $reader = New-Object System.IO.StreamReader($resp.GetResponseStream())
@@ -64,6 +68,9 @@ function Show-ServerHint($body) {
     } elseif ($body -match 'INTERNAL_ERROR') {
         W-Info '服务器返回 500。先看日志定位：docker logs --tail=100 aipdf'
         W-Info '常见于挂载目录不可写，执行：./docker-deploy.sh --fix-perms'
+    } elseif ($body -match 'INVALID_PARAM') {
+        W-Info '参数被拒（422 INVALID_PARAM）。若请求里带了 items/rotate，说明服务端镜像还是旧版：'
+        W-Info '  服务器上 cd /opt/aipdf && ./docker-deploy1.sh 更新镜像后重建容器即可'
     } elseif ($body -match 'PDF_BUILD_FAILED') {
         W-Info 'PDF 生成失败：常见于磁盘写满、挂载目录只读、或图片解码异常'
         W-Info '检查：df -h /opt && ls -ld /opt/aipdf/static/pdfs'
@@ -72,7 +79,7 @@ function Show-ServerHint($body) {
 
 function Invoke-Check {
     # ------------------------------------------------------------ 1) 健康检查
-    W-Step "1/5  健康检查"
+    W-Step "1/6  健康检查"
     try {
         $health = Invoke-RestMethod -Uri "$BaseUrl/health" -TimeoutSec 15
         W-Ok "GET $BaseUrl/health"
@@ -87,6 +94,19 @@ function Invoke-Check {
             }
         } else {
             W-Info '该镜像的 /health 还未上报 public_base_url（旧版本），下面用 pdf_url 反推校验'
+        }
+        # 服务端生效的合成限制：少于 30 张就说明服务器 aipdf.env 里压过 MAX_FILE_COUNT
+        if ($health.PSObject.Properties.Name -contains 'limits' -and $health.limits) {
+            $lim = $health.limits
+            W-Info ("合成限制 : 最多 {0} 张 / 单张 {1}MB / 共 {2}MB" -f `
+                    $lim.max_file_count, $lim.max_file_size_mb, $lim.max_total_size_mb)
+            if ([int]$lim.max_file_count -lt 30) {
+                W-Warn "服务端最多只收 $($lim.max_file_count) 张（新版本默认为 30）"
+                W-Info '服务器上：sed -i "s/^MAX_FILE_COUNT=.*/MAX_FILE_COUNT=30/" /opt/aipdf/aipdf.env && ./docker-deploy1.sh'
+            }
+        } else {
+            W-Warn '该镜像的 /health 未上报 limits（旧版本）：服务端可能只收 20 张'
+            W-Info '服务器上更新镜像后重建容器：cd /opt/aipdf && ./docker-deploy1.sh'
         }
         # 服务端自检告警：BUILD 后新增的 warnings 字段，是“能跑但功能不对”的探测器
         if ($health.PSObject.Properties.Name -contains 'warnings' -and $health.warnings.Count -gt 0) {
@@ -115,7 +135,7 @@ function Invoke-Check {
     }
 
     # ------------------------------------------------------------ 2) 造测试图
-    W-Step "2/5  生成 $Count 张测试图片"
+    W-Step "2/6  生成 $Count 张测试图片"
     Add-Type -AssemblyName System.Drawing
     $images = @()
     for ($i = 1; $i -le $Count; $i++) {
@@ -139,7 +159,7 @@ function Invoke-Check {
     W-Info "工作目录：$script:Work"
 
     # ------------------------------------------- 3) 分张上传（小程序实际路径）
-    W-Step "3/5  分张上传 /api/v1/upload-image（wx.uploadFile 走的路径）"
+    W-Step "3/6  分张上传 /api/v1/upload-image（wx.uploadFile 走的路径）"
     $imageIds = @()
     $idx = 0
     foreach ($img in $images) {
@@ -163,7 +183,7 @@ function Invoke-Check {
     }
 
     # ---------------------------------------------------------- 4) 合并 & 对照
-    W-Step "4/5  合并 /api/v1/convert-to-pdf-by-ids"
+    W-Step "4/6  合并 /api/v1/convert-to-pdf-by-ids"
     $jsonBody = @{
         image_ids = $imageIds
         page_mode = 'fit'
@@ -208,8 +228,81 @@ function Invoke-Check {
         W-Warn "/convert-to-pdf 多文件对照测试异常：$([string]($rawMulti -join ' '))"
     }
 
-    # ------------------------------------------------------------ 5) 下载校验
-    W-Step "5/5  下载 PDF 并校验"
+    # -------------------------------------------------- 5) 旋转参数是否生效
+    W-Step "5/6  旋转参数 items[].rotate（小程序客户端旋转失败时的兜底路径）"
+    # 故意造一张“特别长”的图：split 模式下会被切成多页；
+    # 顺时针转 90° 后变成宽图，只占 1 页 —— 页数变化就证明服务端真的执行了旋转
+    # （旧镜像会忽略 items，两次结果一样）。
+    $tall = Join-Path $script:Work 'tall.jpg'
+    $bmp = New-Object System.Drawing.Bitmap 1200, 4000
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.Clear([System.Drawing.Color]::White)
+    $tallFont = New-Object System.Drawing.Font('Arial', 200, [System.Drawing.FontStyle]::Bold)
+    $g.DrawString('TALL', $tallFont, [System.Drawing.Brushes]::Black, 60, 600)
+    $g.Dispose(); $tallFont.Dispose()
+    $bmp.Save($tall, [System.Drawing.Imaging.ImageFormat]::Jpeg)
+    $bmp.Dispose()
+
+    $rotPages = @{}
+    $compatPages = $null
+    foreach ($case in 'plain', 'rotate90', 'compat') {
+        $rawTall = & curl.exe -sS --max-time 60 -X POST "$BaseUrl/api/v1/upload-image" -F "file=@$tall"
+        try { $upTall = ($rawTall -join '') | ConvertFrom-Json } catch { $upTall = $null }
+        if (-not ($upTall -and $upTall.image_id)) {
+            W-Bad "长图上传失败：$([string]($rawTall -join ' '))"
+            continue
+        }
+
+        # plain：只带 items（新接口）；compat：小程序的实际载荷 —— image_ids + items 同时带，
+        # 旧服务端会忽略 items（pydantic 默认忽略额外字段），PDF 照样能生成。
+        $rotDeg = 0
+        if ($case -ne 'plain') { $rotDeg = 90 }
+        $rotBody = @{
+            items     = @(@{ image_id = $upTall.image_id; rotate = $rotDeg })
+            page_mode = 'split'
+            pdf_title = 'check-rotate'
+        }
+        if ($case -eq 'compat') { $rotBody['image_ids'] = @($upTall.image_id) }
+
+        try {
+            $rotRes = Invoke-RestMethod -Uri "$BaseUrl/api/v1/convert-to-pdf-by-ids" -Method Post `
+                -ContentType 'application/json; charset=utf-8' `
+                -Body ([System.Text.Encoding]::UTF8.GetBytes(($rotBody | ConvertTo-Json -Compress -Depth 5))) `
+                -TimeoutSec 180
+            W-Info ("{0,-9} rotate={1,-3} image_ids={2,-5} → page_count={3}" -f `
+                    $case, $rotDeg, $rotBody.ContainsKey('image_ids'), $rotRes.page_count)
+            if ($case -eq 'compat') {
+                $compatPages = [int]$rotRes.page_count
+            } elseif ($case -eq 'plain') {
+                $rotPages[0] = [int]$rotRes.page_count
+            } else {
+                $rotPages[90] = [int]$rotRes.page_count
+            }
+        } catch {
+            W-Bad "$case 转换失败：$($_.Exception.Message)"
+            $b = Get-ErrBody $_
+            if ($b) { W-Info ("服务端正文：" + $b); Show-ServerHint $b }
+        }
+    }
+    if ($rotPages.ContainsKey(0) -and $rotPages.ContainsKey(90)) {
+        if ($rotPages[90] -lt $rotPages[0]) {
+            W-Ok ("旋转已生效：同一张长图 {0} 页 → 转 90° 后 {1} 页" -f $rotPages[0], $rotPages[90])
+        } else {
+            W-Bad ("旋转没生效（{0} 页 → {1} 页）：服务端镜像还是旧版，items[].rotate 被忽略" -f $rotPages[0], $rotPages[90])
+            W-Info '服务器上更新镜像并重建容器：cd /opt/aipdf && ./docker-deploy1.sh'
+        }
+    }
+    if ($null -ne $compatPages) {
+        W-Ok "小程序载荷（image_ids + items）被服务端接受，PDF 能正常生成"
+    } else {
+        W-Bad '小程序载荷（image_ids + items）被拒绝了，旧版小程序可能会报错'
+    }
+    # 单图上传 → 转换 → 下载的完整轮次里，暂存图在成功后会被删除；上面用了 4 次上传，
+    # 这里不再额外校验暂存目录，避免与其它页面的 test-* 图片互相干扰。
+    Remove-Item -LiteralPath $tall -Force -ErrorAction SilentlyContinue
+
+    # ------------------------------------------------------------ 6) 下载校验
+    W-Step "6/6  下载 PDF 并校验"
     $pdfPath = Join-Path $script:Work 'result.pdf'
 
     # 先看 pdf_url 域名对不对 —— 这是“合成成功但小程序报 downloadFile:fail”的根因
