@@ -6,7 +6,7 @@
     <view class="hero__title">AI 拍纸立得 - 图片转 PDF</view>
     <view class="hero__sub">拍摄 / 选图 → 调整顺序 → 一键合成 A4 文档，可保存与转发</view>
     <!-- 调试态提示：直观确认当前连的是哪个后端（prod 不显示） -->
-    <view class="hero__dev" wx:if="{{isLocal}}">调试 · {{env}} · {{baseUrl}}</view>
+    <view class="hero__dev" wx:if="{{isLocal}}">调试 · {{env}} · {{baseUrl}}{{appId ? ' · ' + appId : ''}}</view>
   </view>
 
   <!-- ============ 已选图片网格 ============ -->

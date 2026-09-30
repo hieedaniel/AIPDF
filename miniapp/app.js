@@ -2,7 +2,7 @@
 //
 // 这里只放全局配置。页面里（pages/index/index.js）也有一份同样的环境开关，
 // 若你新增页面，建议统一改成从 globalData 读取。
-const ENV = 'local'; // 'local' | 'local-device' | 'server' | 'prod'
+const ENV = 'server'; // 'local' | 'local-device' | 'server' | 'prod' —— 需与 pages/index/index.js 保持一致
 
 const BASE_URLS = {
   local: 'http://127.0.0.1:8000',

@@ -71,6 +71,19 @@ Page({
     isLocal: IS_LOCAL, // 调试态时在顶部展示当前后端地址
     env: ENV, // 当前环境，便于在 WXML 里做条件渲染
     baseUrl: BASE_URL,
+    appId: '', // 运行时 AppID：域名白名单报错时用来校对“是不是配到了同一个小程序”
+  },
+
+  onLoad() {
+    // 域名白名单是配在「某个小程序 AppID」名下的。如果配置的小程序和这里跑的不是
+    // 同一个，白名单怎么配都没用 —— 所以把运行时 AppID 直接显示在调试条里。
+    let appId = '';
+    try {
+      appId = (wx.getAccountInfoSync && wx.getAccountInfoSync().miniProgram.appId) || '';
+    } catch (e) {
+      appId = '';
+    }
+    this.setData({ appId });
   },
 
   /* =====================================================================
@@ -415,10 +428,15 @@ Page({
           ? '下载合法域名（downloadFile）'
           : 'request 合法域名';
       content =
-        `手机上会校验域名白名单（${kind}），开发者工具里的「不校验合法域名」对【预览】不生效。\n` +
-        `去小程序后台配置：开发管理 → 开发设置 → 服务器域名\n` +
-        `request / uploadFile / downloadFile 三栏都填：https://${host}\n` +
-        '保存后重新预览即可（不用重新上传代码）。';
+        `手机上会校验域名白名单（缺：${kind}），开发者工具里的「不校验合法域名」对【预览】不生效。\n\n` +
+        `本次请求的目标：\n${content}\n` +
+        `当前 AppID：${this.data.appId || '（未取到）'}\n` +
+        `环境：${ENV}\n\n` +
+        '按这三条逐个排除：\n' +
+        '1) 公众平台里配的小程序必须就是这个 AppID（用「测试号」会不一致）\n' +
+        '2) 开发管理 → 开发设置 → 服务器域名，request / uploadFile / downloadFile 三栏都填 → 保存（需管理员扫码确认）\n' +
+        '3) 改完把小程序从手机“最近使用”里删掉，重新扫码预览（域名列表在启动时拉取）\n' +
+        `目标域名：https://${host}`;
     } else if (IS_LOCAL && /网络|request:fail|downloadFile:fail/i.test(content)) {
       content = ENV === 'server'
         ? `连不上服务器（${BASE_URL}）\n` +
