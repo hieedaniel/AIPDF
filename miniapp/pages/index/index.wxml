@@ -1,10 +1,14 @@
 <!--pages/index/index.wxml-->
+
+<!-- 拖动排序时锁住页面滚动，避免“手指不动、页面乱跑” -->
+<page-meta page-style="{{dragging ? 'overflow: hidden;' : ''}}" />
+
 <view class="page">
 
   <!-- ============ 顶部标题 ============ -->
   <view class="hero">
     <view class="hero__title">AI 拍纸立得 - 图片转 PDF</view>
-    <view class="hero__sub">拍摄 / 选图 → 调整顺序 → 一键合成 A4 文档，可保存与转发</view>
+    <view class="hero__sub">拍摄 / 选图 → 旋转、排序 → 一键合成 A4 文档，可保存与转发</view>
     <!-- 调试态提示：直观确认当前连的是哪个后端（prod 不显示） -->
     <view class="hero__dev" wx:if="{{isLocal}}">调试 · {{env}} · {{baseUrl}}{{appId ? ' · ' + appId : ''}}</view>
   </view>
@@ -23,22 +27,45 @@
       <view class="empty__desc">点击这里，或下方「添加图片 / 拍照」</view>
     </view>
 
-    <!-- 图片网格 -->
-    <view class="grid" wx:else>
-      <view class="cell" wx:for="{{images}}" wx:key="path">
-        <!-- 点击查看大图 -->
+    <!-- 图片网格：长按任意一张进入排序模式，按住即可拖动重排 -->
+    <view
+      class="grid {{sorting ? 'grid--sorting' : ''}}"
+      wx:else
+      bindtouchmove="onDragMove"
+      bindtouchend="endDrag"
+      bindtouchcancel="endDrag"
+    >
+      <view
+        class="cell cell--pic {{dragging && dragId === item.id ? 'cell--dragging' : ''}}"
+        wx:for="{{images}}"
+        wx:key="id"
+        data-index="{{index}}"
+        data-id="{{item.id}}"
+        style="{{dragging && dragId === item.id ? 'left:' + dragLeft + 'px;top:' + dragTop + 'px;width:' + cellW + 'px;height:' + cellH + 'px;' : ''}}"
+        bindlongpress="onCellLongPress"
+        bindtouchstart="onCellTouchStart"
+      >
+        <!-- 点击查看大图（可双指放大 / 双击放大） -->
         <image
           class="cell__img"
           src="{{item.path}}"
           mode="aspectFill"
           lazy-load
+          style="transform: rotate({{item.rotate}}deg)"
           data-index="{{index}}"
           bindtap="previewImage"
         />
         <!-- 序号，直观体现排版顺序 -->
         <view class="cell__badge">{{index + 1}}</view>
+        <!-- 旋转：每次顺时针 90°，缩略图即时跟随 -->
+        <view class="cell__rot" data-index="{{index}}" catchtap="rotateImage">⟳</view>
         <!-- 删除（catchtap 阻止冒泡，避免触发预览） -->
         <view class="cell__del" data-index="{{index}}" catchtap="removeImage">✕</view>
+        <!-- 排序模式的兜底：拖动不好用时，点 ‹ / › 挪一格 -->
+        <view class="cell__move" wx:if="{{sorting}}">
+          <view class="cell__movebtn" data-index="{{index}}" data-delta="-1" catchtap="moveImage">‹</view>
+          <view class="cell__movebtn" data-index="{{index}}" data-delta="1" catchtap="moveImage">›</view>
+        </view>
       </view>
 
       <!-- 追加入口 -->
@@ -46,6 +73,12 @@
         <view class="cell__plus">＋</view>
         <view class="cell__addtext">继续添加</view>
       </view>
+    </view>
+
+    <!-- 排序模式提示条 -->
+    <view class="sortbar" wx:if="{{sorting}}">
+      <text class="sortbar__hint">按住图片拖动排序，也可点 ‹ › 微调</text>
+      <text class="sortbar__done" bindtap="exitSort">完成</text>
     </view>
   </view>
 
@@ -77,7 +110,7 @@
   <!-- ============ 底部操作区 ============ -->
   <view class="footer">
     <view class="footer__meta" wx:if="{{images.length}}">
-      <text class="footer__hint">按上方序号顺序排版</text>
+      <text class="footer__hint">点图可放大预览（双指缩放）· 长按拖动排序</text>
       <text class="footer__clear" bindtap="clearAll">清空全部</text>
     </view>
 
@@ -96,5 +129,12 @@
       bindtap="generatePdf"
     >{{generating ? (progressText || '生成中…') : '生成 PDF 并预览'}}</button>
   </view>
+
+  <!--
+    旋转用的隐藏 canvas（type=2d）：
+    不能用 display:none —— 那样节点不会被渲染，canvasToTempFilePath 会失败/空白，
+    所以用「移出屏幕可视区」的方式藏起来。
+  -->
+  <canvas type="2d" id="rotate-canvas" class="offscreen-canvas"></canvas>
 
 </view>

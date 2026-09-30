@@ -14,8 +14,9 @@ import importlib.util
 import logging
 import os
 from io import BytesIO
+from itertools import chain
 from pathlib import Path
-from typing import Optional, Sequence, Tuple
+from typing import Iterable, Iterator, Optional, Tuple
 
 from app.config import settings
 from app.core.exceptions import ApiError as ApiError_
@@ -84,7 +85,7 @@ def resolve_engine(preferred: str = "auto") -> str:
 
 
 def build_pdf(
-    pages: Sequence[PageImage],
+    pages: Iterable[PageImage],
     output_path: Path,
     *,
     engine: Optional[str] = None,
@@ -93,10 +94,18 @@ def build_pdf(
 ) -> int:
     """生成 PDF 并写入 output_path（先写 .part 再原子重命名，避免半成品被下载）。
 
+    pages 可以是任意可迭代对象（含生成器）：图片是「取一页写一页」的，
+    所以调用方可以惰性解码 —— 合成 30 张图时内存不会随张数线性增长。
+
     返回页数。
     """
-    if not pages:
-        raise pdf_build_failed("没有可写入的图片")
+    # 不 materialize：只探一次头，既能判空，也不破坏惰性
+    iterator = iter(pages)
+    try:
+        first = next(iterator)
+    except StopIteration:
+        raise pdf_build_failed("没有可写入的图片") from None
+    stream = chain((first,), iterator)
 
     engine_name = resolve_engine(engine or settings.pdf_engine)
     margin_pt = settings.margin_pt if margin_pt is None else margin_pt
@@ -106,9 +115,9 @@ def build_pdf(
 
     try:
         if engine_name == "pymupdf":
-            page_count = _build_with_pymupdf(pages, tmp_path, margin_pt, title)
+            page_count = _build_with_pymupdf(stream, tmp_path, margin_pt, title)
         else:
-            page_count = _build_with_reportlab(pages, tmp_path, margin_pt, title)
+            page_count = _build_with_reportlab(stream, tmp_path, margin_pt, title)
         os.replace(tmp_path, output_path)  # 原子替换
     except Exception as exc:
         logger.exception("PDF 生成失败 engine=%s", engine_name)
@@ -128,7 +137,7 @@ def build_pdf(
 
 # --------------------------- PyMuPDF 引擎 ---------------------------
 def _build_with_pymupdf(
-    pages: Sequence[PageImage],
+    pages: Iterator[PageImage],
     output_path: Path,
     margin_pt: float,
     title: Optional[str],
@@ -155,7 +164,7 @@ def _build_with_pymupdf(
 
 # --------------------------- ReportLab 引擎 ---------------------------
 def _build_with_reportlab(
-    pages: Sequence[PageImage],
+    pages: Iterator[PageImage],
     output_path: Path,
     margin_pt: float,
     title: Optional[str],
@@ -168,6 +177,7 @@ def _build_with_reportlab(
     if title:
         c.setTitle(title)
         c.setAuthor("AI 拍纸立得")
+    count = 0
     for payload, width, height in pages:
         x0, y0, x1, y1 = _fit_rect(width, height, margin_pt)
         # ReportLab 原点在左下角；anchor='c' + preserveAspectRatio 保证居中不变形
@@ -182,8 +192,9 @@ def _build_with_reportlab(
             mask=None,
         )
         c.showPage()
+        count += 1
     c.save()
-    return len(pages)
+    return count
 
 
 def usable_ratio(margin_pt: float) -> float:

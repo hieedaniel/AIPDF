@@ -104,6 +104,11 @@ page {
   flex-wrap: wrap;
 }
 
+/* 排序模式：给可拖动的格子加一圈提示（用 box-shadow，不改布局尺寸） */
+.grid--sorting .cell--pic {
+  box-shadow: 0 0 0 4rpx rgba(74, 108, 247, 0.45);
+}
+
 .cell {
   position: relative;
   width: 200rpx;
@@ -119,10 +124,22 @@ page {
   margin-right: 0;
 }
 
+/* 拖动中的格子：脱离文档流跟着手指跑，其它格子自动让位 */
+.grid .cell--dragging {
+  position: fixed;
+  z-index: 20;
+  margin: 0;
+  opacity: 0.92;
+  transform: scale(1.08);
+  box-shadow: 0 16rpx 40rpx rgba(31, 35, 41, 0.35);
+}
+
 .cell__img {
   width: 100%;
   height: 100%;
   display: block;
+  /* 旋转过渡：点 ⟳ 时能看到方向变化，而不是突变 */
+  transition: transform 0.2s ease-out;
 }
 
 .cell__badge {
@@ -141,6 +158,25 @@ page {
   text-align: center;
 }
 
+/* 旋转按钮：左上角 */
+.cell__rot {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 52rpx;
+  height: 52rpx;
+  border-bottom-right-radius: 16rpx;
+  background: rgba(0, 0, 0, 0.5);
+  color: #ffffff;
+  font-size: 30rpx;
+  line-height: 52rpx;
+  text-align: center;
+}
+
+.cell__rot:active {
+  background: rgba(74, 108, 247, 0.9);
+}
+
 .cell__del {
   position: absolute;
   right: 0;
@@ -157,6 +193,63 @@ page {
 
 .cell__del:active {
   background: rgba(250, 81, 81, 0.9);
+}
+
+/* 排序模式的 ‹ › 按钮（拖动不好用时的兜底方案） */
+.cell__move {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  height: 48rpx;
+  background: rgba(31, 35, 41, 0.6);
+}
+
+.cell__movebtn {
+  flex: 1;
+  color: #ffffff;
+  font-size: 32rpx;
+  line-height: 48rpx;
+  text-align: center;
+}
+
+.cell__movebtn:active {
+  background: rgba(74, 108, 247, 0.9);
+}
+
+/* 排序模式提示条 */
+.sortbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8rpx;
+  padding: 14rpx 18rpx;
+  border-radius: 14rpx;
+  background: #f0f3ff;
+}
+
+.sortbar__hint {
+  font-size: 22rpx;
+  color: #3b5be0;
+}
+
+.sortbar__done {
+  font-size: 24rpx;
+  font-weight: 600;
+  color: #ffffff;
+  padding: 6rpx 22rpx;
+  border-radius: 24rpx;
+  background: #4a6cf7;
+}
+
+/* ================= 隐藏 canvas（旋转用） ================= */
+.offscreen-canvas {
+  position: fixed;
+  left: -9999px;
+  top: 0;
+  width: 2px;
+  height: 2px;
 }
 
 /* 追加格子 */

@@ -26,7 +26,7 @@ from app.config import settings
 from app.core import diagnostics
 from app.core.exceptions import register_exception_handlers
 from app.routers import convert
-from app.schemas.pdf import HealthResponse
+from app.schemas.pdf import HealthResponse, LimitsInfo
 from app.services import pdf_builder, storage
 
 logging.basicConfig(
@@ -48,6 +48,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("PDF 输出目录  : %s", settings.pdf_dir)
     logger.info("暂存目录      : %s", settings.upload_dir)
     logger.info("公网地址      : %s", settings.public_base_url or "（未配置，按请求 Host 推导）")
+    logger.info(
+        "合成限制      : 最多 %d 张 / 单张 %dMB / 共 %dMB",
+        settings.max_file_count,
+        settings.max_file_size_mb,
+        settings.max_total_size_mb,
+    )
     logger.info("CORS 白名单   : %s", settings.cors_origins_list)
     for warning in diagnostics.collect(force=True):
         logger.warning("配置自检      : %s", warning)
@@ -169,6 +175,12 @@ async def health() -> HealthResponse:
         pdf_engine=pdf_builder.resolve_engine(settings.pdf_engine),
         public_base_url=settings.public_base_url,
         warnings=diagnostics.collect(),
+        # 客户端据此限制选图张数，避免端上限与服务端上限不一致
+        limits=LimitsInfo(
+            max_file_count=settings.max_file_count,
+            max_file_size_mb=settings.max_file_size_mb,
+            max_total_size_mb=settings.max_total_size_mb,
+        ),
     )
 
 

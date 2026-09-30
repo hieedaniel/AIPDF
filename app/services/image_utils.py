@@ -16,7 +16,7 @@ import io
 import logging
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Iterable, Iterator, List, Optional, Tuple
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 from starlette.datastructures import UploadFile
@@ -46,6 +46,39 @@ SUPPORTED_FORMATS = {"JPEG", "PNG", "WEBP", "BMP", "GIF", "TIFF"}
 
 # 一页的图片数据：(JPEG 字节, 像素宽, 像素高)
 PageImage = Tuple[bytes, int, int]
+
+# 支持的顺时针旋转角度
+SUPPORTED_ROTATIONS: Tuple[int, ...] = (0, 90, 180, 270)
+
+# 顺时针角度 → Pillow transpose。
+# 注意 Pillow 的 Image.ROTATE_90 是“逆时针”90°，所以顺时针 90° 要用 ROTATE_270。
+_ROTATE_TO_TRANSPOSE = {
+    90: Image.Transpose.ROTATE_270,
+    180: Image.Transpose.ROTATE_180,
+    270: Image.Transpose.ROTATE_90,
+}
+
+
+def normalize_rotate(value: object) -> int:
+    """把任意输入吸附到 0/90/180/270（顺时针）。
+
+    故意不抛异常：一张图的旋转角度非法，不应该让整单合成失败。
+    """
+    try:
+        angle = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+    if angle != angle or angle in (float("inf"), float("-inf")):  # NaN / inf
+        return 0
+    return int((round(angle) + 45) // 90 * 90) % 360
+
+
+def rotate_image(img: Image.Image, rotate: object) -> Image.Image:
+    """按顺时针角度旋转；0° 时原样返回（不复制像素，避免无谓的内存占用）。"""
+    op = _ROTATE_TO_TRANSPOSE.get(normalize_rotate(rotate))
+    if op is None:
+        return img
+    return img.transpose(op)
 
 
 def sniff_format(data: bytes) -> Optional[str]:
@@ -154,6 +187,7 @@ def split_pages(
     *,
     usable_ratio: float,
     quality: int,
+    rotate: object = 0,
 ) -> List[PageImage]:
     """把一张图片切成若干"页"。
 
@@ -161,7 +195,25 @@ def split_pages(
     - split ：按"可打印区域宽高比"垂直切片，长截图自然分成多页 A4。
 
     usable_ratio = 可打印区域宽 / 高（已扣除页边距）。
+    rotate       = 顺时针旋转角度（0/90/180/270），**先旋转再切片**，
+                   这样横图转竖后长边方向才是对的。
     """
+    rotated = rotate_image(img, rotate)
+    try:
+        return _split_rotated(rotated, page_mode, usable_ratio=usable_ratio, quality=quality)
+    finally:
+        # 只有真的发生过旋转才产生新对象，需要显式释放
+        if rotated is not img:
+            rotated.close()
+
+
+def _split_rotated(
+    img: Image.Image,
+    page_mode: str,
+    *,
+    usable_ratio: float,
+    quality: int,
+) -> List[PageImage]:
     if page_mode != "split":
         return [(encode_jpeg(img, quality), img.width, img.height)]
 
@@ -187,6 +239,33 @@ def split_pages(
 def guess_extension(filename: Optional[str]) -> str:
     """(仅用于日志/错误提示) 取原始文件后缀。"""
     return Path(filename or "").suffix.lower().lstrip(".") or "unknown"
+
+
+def iter_page_images(
+    items: Iterable[Tuple[str, bytes, int]],
+    page_mode: str,
+    *,
+    usable_ratio: float,
+    quality: int,
+    cfg: Settings = default_settings,
+) -> Iterator[PageImage]:
+    """惰性把 [(文件名, 字节, 旋转角度), ...] 转成逐页的 JPEG。
+
+    这是「支持几十张图」的关键：全程只有一张图的像素驻留内存，
+    调用方（PDF 引擎）拿到一页写一页，内存占用与张数无关。
+    """
+    for name, raw, rotate in items:
+        image = decode_image(raw, name, cfg=cfg)
+        try:
+            yield from split_pages(
+                image,
+                page_mode,
+                usable_ratio=usable_ratio,
+                quality=quality,
+                rotate=rotate,
+            )
+        finally:
+            image.close()
 
 
 # data:image/jpeg;base64,... 前缀

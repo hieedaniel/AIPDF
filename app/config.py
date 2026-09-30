@@ -39,7 +39,8 @@ class Settings(BaseSettings):
     var_dir: Path = BASE_DIR / "var"
     upload_subdir: str = "uploads"
     # 暂存原图的保留时长（分钟），合成后立即删除，这里是兜底
-    upload_ttl_minutes: int = 30
+    # 张数多时逐张上传耗时较长，留够时间避免前几张先过期
+    upload_ttl_minutes: int = 60
     # 对外访问域名，例如 https://api.yourdomain.com
     # 留空则根据请求的 Host 自动推导（生产环境建议显式配置）
     public_base_url: Optional[str] = None
@@ -50,9 +51,9 @@ class Settings(BaseSettings):
 
     # ---------------- 上传限制 ----------------
     max_file_size_mb: int = 15      # 单张图片大小上限
-    max_total_size_mb: int = 80     # 单次请求所有图片总大小上限
+    max_total_size_mb: int = 120    # 单次请求所有图片总大小上限（30 张 × 压缩后约 1MB）
     max_request_body_mb: int = 120  # 单次 HTTP 请求体上限（base64 场景留出 1/3 余量）
-    max_file_count: int = 20        # 单次请求最多图片张数
+    max_file_count: int = 30        # 单次请求最多图片张数（小程序端一次选图上限见 /health 的 limits）
     min_image_side: int = 16        # 图片最小边（像素），过小视为损坏
     max_image_side: int = 4096      # 长边超过该值时等比缩小，控制内存与体积
 

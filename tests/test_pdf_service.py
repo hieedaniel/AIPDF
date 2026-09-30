@@ -184,3 +184,100 @@ def test_cleanup_expired_removes_old_files(monkeypatch, tmp_path: Path):
     assert not old.exists()
     assert not leftover.exists()
     assert fresh.exists()
+
+
+# ------------------------- 旋转 / 惰性生成 -------------------------
+
+def test_normalize_rotate_snaps_and_survives_garbage():
+    """角度非法时吸附到最近的 90°，而不是让整单合成失败。"""
+    assert [image_utils.normalize_rotate(v) for v in (0, 90, 180, 270)] == [0, 90, 180, 270]
+    assert image_utils.normalize_rotate(360) == 0
+    assert image_utils.normalize_rotate(-90) == 270
+    assert image_utils.normalize_rotate(88) == 90
+    assert image_utils.normalize_rotate(200) == 180
+    assert image_utils.normalize_rotate("90") == 90
+    for bad in (None, "", "abc", float("nan"), object()):
+        assert image_utils.normalize_rotate(bad) == 0
+
+
+def test_rotate_image_is_clockwise():
+    """顺时针 90° 后，原本在左上角的点应跑到右上角。
+
+    Pillow 的 Image.ROTATE_90 是逆时针，这里最容易写反，所以用像素验证。
+    """
+    img = Image.new("RGB", (100, 50), (0, 0, 0))
+    img.putpixel((0, 0), (255, 0, 0))  # 左上角
+    expected = {
+        0: ((100, 50), (0, 0)),
+        90: ((50, 100), (49, 0)),     # 左上 -> 右上
+        180: ((100, 50), (99, 49)),   # 左上 -> 右下
+        270: ((50, 100), (0, 99)),    # 左上 -> 左下
+    }
+    for deg, (size, red) in expected.items():
+        out = image_utils.rotate_image(img, deg)
+        try:
+            assert out.size == size, f"rotate={deg}"
+            assert out.getpixel(red) == (255, 0, 0), f"rotate={deg}"
+        finally:
+            if out is not img:
+                out.close()
+
+
+def test_split_pages_rotates_before_slicing():
+    """先旋转再切片：竖向长图转成横向后，页数应变少（切片方向跟着变）。"""
+    portrait = _decode(make_image((900, 1350)), "long.jpg")
+    try:
+        ratio = pdf_builder.usable_ratio(settings.margin_pt)
+        plain = image_utils.split_pages(portrait, "split", usable_ratio=ratio, quality=80)
+        rotated = image_utils.split_pages(
+            portrait, "split", usable_ratio=ratio, quality=80, rotate=90
+        )
+        assert len(plain) == 2          # 900x1350 竖图会被切成 2 段
+        assert len(rotated) == 1        # 旋转后是 1350x900 横图
+        assert rotated[0][1] > rotated[0][2]  # 宽 > 高
+        # 原图不能被就地修改
+        assert portrait.size == (900, 1350)
+    finally:
+        portrait.close()
+
+
+def test_build_pdf_accepts_generator_and_still_rejects_empty(tmp_path: Path):
+    img = _decode(make_image((600, 800)), "g.jpg")
+    try:
+        pages = image_utils.split_pages(img, "fit", usable_ratio=0.707, quality=80)
+    finally:
+        img.close()
+
+    out = tmp_path / "lazy.pdf"
+    assert pdf_builder.build_pdf(iter(pages), out) == 1   # 生成器 / 迭代器都行
+    assert out.is_file() and not out.with_suffix(".pdf.part").exists()
+
+    with pytest.raises(ApiError):
+        pdf_builder.build_pdf(iter([]), tmp_path / "empty.pdf")
+    assert not (tmp_path / "empty.pdf").exists()
+
+
+def test_convert_streams_to_pdf_accepts_lazy_generator():
+    """生成器 + source_count：几十张图也能一张一张进内存，而不是全部先读进来。"""
+    payload = make_image((600, 800))
+    names = [f"lazy-{i}.jpg" for i in range(3)]
+    seen: list[str] = []
+
+    def lazy():
+        for name in names:
+            seen.append(name)      # 记录读取顺序，确认是逐张消费
+            yield name, payload
+
+    result = pdf_service.convert_streams_to_pdf(lazy(), source_count=3, page_mode="fit")
+    assert result.source_count == 3
+    assert result.page_count == 3
+    assert seen == names           # 按顺序逐张，不是一次性 materialize
+
+
+def test_convert_streams_to_pdf_generator_needs_source_count():
+    def lazy():
+        yield "a.jpg", make_image((400, 400))
+
+    with pytest.raises(ApiError) as excinfo:
+        pdf_service.convert_streams_to_pdf(lazy())
+    assert excinfo.value.code == "INVALID_PARAM"

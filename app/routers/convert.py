@@ -127,7 +127,12 @@ async def upload_image(
     "/convert-to-pdf-by-ids",
     response_model=ConvertResponse,
     summary="【分张上传】按 image_id 顺序合并为 A4 PDF",
-    description=("接收 `/upload-image` 返回的 `image_ids` 数组，按数组顺序排版合成一个 A4 PDF。"),
+    description=(
+        "接收 `/upload-image` 返回的图片列表，按数组顺序排版合成一个 A4 PDF。\n\n"
+        "- `image_ids: [\"...\"]`：仅按顺序合并；\n"
+        "- `items: [{\"image_id\": \"...\", \"rotate\": 90}]`：额外支持顺时针旋转，"
+        "在服务端旋转是无损的（不需要客户端重新编码）。"
+    ),
     responses={
         400: {"model": ErrorResponse, "description": "image_id 非法 / 没有可合并的图片"},
         404: {"model": ErrorResponse, "description": "image_id 不存在或已过期"},
@@ -139,8 +144,10 @@ async def convert_to_pdf_by_ids(
     request: Request,
     payload: ConvertByIdsRequest,
 ) -> ConvertResponse:
+    items = payload.resolved_items()
     result = await pdf_service.convert_temp_images_to_pdf(
-        payload.image_ids,
+        [item.image_id for item in items],
+        rotations=[item.rotate for item in items],
         page_mode=payload.page_mode,
         pdf_title=payload.pdf_title,
         cfg=settings,

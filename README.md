@@ -177,21 +177,33 @@ curl -X POST https://yourdomain.com/api/v1/convert-to-pdf \
 curl -X POST https://yourdomain.com/api/v1/upload-image -F "file=@1.jpg"
 # → {"code":0,"image_id":"9fc631e4...","size_bytes":183920,"expires_at":"..."}
 
-# 第二步：按期望的排版顺序提交 id 数组，一次合成
+# 需要旋转时改用 items（与 image_ids 等价，但每张可带顺时针角度）
+# items 优先于 image_ids；两者同时传时以 items 为准
 curl -X POST https://yourdomain.com/api/v1/convert-to-pdf-by-ids \
   -H 'content-type: application/json' \
-  -d '{"image_ids":["9fc631e4...","3210872e..."],"page_mode":"fit","pdf_title":"scan"}'
+  -d '{"items":[{"image_id":"9fc631e4...","rotate":90},{"image_id":"3210872e...","rotate":0}]}'
 ```
+
+`rotate` 取 `0` / `90` / `180` / `270`（顺时针），其他值会被吸附到最近的 90°。
+服务端旋转是**无损**的（先旋转再切片，不重新编码），所以 `page_mode=split` 时
+`rotate=90` 会让切片方向跟着变（竖向长图转成横向后页数更少）。
+
+张数上限由 `MAX_FILE_COUNT` 控制（默认 **30**，12 张实测通过）：
+图片是「取一页写一页」的惰性处理，内存占用基本恒定，不会随张数线性膨胀。
+客户端可先读 `GET /health` 的 `limits`，用服务端生效值来限制一次选图的张数。
+
+> 小程序 `wx.chooseMedia` / `wx.chooseImage` 单次 `count` 最多 **9**，
+> 要选更多请分批追加（点缩略图网格里的 “+” 继续选）。
 
 优势：请求体小（不膨胀 base64）、单张可任意大、顺序由数组决定；
 上传的原图先规范化（EXIF/转 RGB/JPEG）暂存到 `var/uploads/`（**不在 static 下，外部无法访问**），
-合并成功后立即删除，失败则保留 30 分钟供重试。
+合并成功后立即删除，失败则保留 `UPLOAD_TTL_MINUTES`（默认 60）分钟供重试。
 
 ### 3.4 其他
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/health` | 健康检查，返回实际生效的 PDF 引擎、`public_base_url` 与 **`warnings` 自检告警** |
+| GET | `/health` | 健康检查，返回实际生效的 PDF 引擎、`public_base_url`、**`warnings` 自检告警**与 **`limits` 限制值** |
 | GET | `/docs` | Swagger UI（可直接在浏览器里拖图片调试） |
 | GET | `/static/pdfs/<file>.pdf` | 静态文件服务，外部可直接访问生成的 PDF |
 
@@ -207,11 +219,14 @@ curl -X POST https://yourdomain.com/api/v1/convert-to-pdf-by-ids \
   "warnings": [
     "未配置 PUBLIC_BASE_URL：将按请求 Host 推导对外地址…",
     "STATIC_DIR=/app/static 不可写（当前 uid=10001）：上传/合成会返回 STORAGE_NOT_WRITABLE…"
-  ]
+  ],
+  "limits": { "max_file_count": 30, "max_file_size_mb": 15, "max_total_size_mb": 120 }
 }
 ```
 
 `warnings` 非空就属于「服务起得来、但功能不正常」，优先处理。
+`limits` 是**本实例真正生效的**限制值：小程序启动时读它来限制一次选图的张数，
+避免「手机允许 30 张、服务端只收 20 张」这类只能到用户那里才暴露的错配。
 
 ### 错误响应（统一结构）
 
@@ -244,13 +259,13 @@ curl -X POST https://yourdomain.com/api/v1/convert-to-pdf-by-ids \
 | `PDF_SUBDIR` | `pdfs` | PDF 存放子目录 |
 | `VAR_DIR` | `./var` | 运行时目录（暂存上传原图，不对外暴露） |
 | `UPLOAD_SUBDIR` | `uploads` | 暂存子目录 |
-| `UPLOAD_TTL_MINUTES` | `30` | 未合并的暂存原图保留时长 |
+| `UPLOAD_TTL_MINUTES` | `60` | 未合并的暂存原图保留时长（张数多时给客户端留重试余地） |
 | `PDF_TTL_HOURS` | `24` | 文件保留时长 |
 | `CLEANUP_INTERVAL_MINUTES` | `60` | 后台清理间隔 |
 | `MAX_FILE_SIZE_MB` | `15` | 单张图片上限 |
-| `MAX_TOTAL_SIZE_MB` | `80` | 单次总量上限 |
+| `MAX_TOTAL_SIZE_MB` | `120` | 单次总量上限 |
 | `MAX_REQUEST_BODY_MB` | `120` | 请求体上限（读取前按 Content-Length 拦截） |
-| `MAX_FILE_COUNT` | `20` | 单次最多张数 |
+| `MAX_FILE_COUNT` | `30` | 单次最多张数（会通过 `/health` 的 `limits` 下发给客户端） |
 | `MAX_IMAGE_SIDE` | `4096` | 长边超过则等比缩小（控内存/体积，不影响 A4 打印清晰度） |
 | `MIN_IMAGE_SIDE` | `16` | 小于该边长视为无效图片 |
 | `PDF_ENGINE` | `auto` | `auto` / `pymupdf` / `reportlab` |
@@ -281,10 +296,22 @@ miniapp/
 3. 把域名加入「开发管理 → 开发设置 → 服务器域名」的 `request`、`uploadFile`、`downloadFile` 三类合法域名；
    本地调试可在工具里勾选“不校验合法域名”（`project.config.json` 中已设 `urlCheck: false`，**上线前改回 true**）。
 
-页面包含：顶部标题、3 列缩略图网格（点图预览、给角标看顺序、✕ 删除）、
+页面包含：顶部标题、3 列缩略图网格（点图可放大预览并双指缩放、⟳ 顺时针旋转、✕ 删除）、
 排版模式切换（每图一页 / 长图分页）、底部【添加图片 / 拍照】【生成 PDF 并预览】两个按钮，
 生成过程用 `wx.showLoading({mask:true})` 逐步提示“上传中 2/3 → 正在合成 → 正在下载”，
 最终 `wx.openDocument({fileType:'pdf', showMenu:true})` 预览，右上角可直接保存/转发。
+
+小屏/大张数相关的四个交互（都已在代码里实现）：
+
+| 能力 | 怎么用 | 实现要点 |
+| --- | --- | --- |
+| 旋转图片 | 点缩略图左上角的 `⟳`，每次顺时针 90° | 客户端 canvas 旋转（缩略图用 CSS `transform` 即时跟随，所见即所得）；导出前会按 `MAX_CANVAS_PIXELS` 限幅，避免长截图把机型 canvas 撑爆 |
+| 调整位置 | **长按**任意缩略图进入排序模式，按住拖动重排；也可点 `‹` `›` 微调，点「完成」退出 | 拖动时用 `position: fixed` 跟手 + `boundingClientRect` 量取格子位置做“就近插入”，拖到屏幕上下边缘会 `wx.pageScrollTo` 自动滚动 |
+| 超过 9 张 | 点「继续添加」分批选，上限由 `/health` 的 `limits.max_file_count` 决定（默认 30） | `wx.chooseMedia` 单次 `count` 最大就是 9，所以内部 `CHOOSE_BATCH = 9`；上传改为**限流 3 的并发**，进度条不再“卡在 1/30” |
+| 放大缩小看 | 点缩略图 → `wx.previewImage`（双指缩放 / 双击放大）；生成的 PDF 用 `wx.openDocument` 打开，阅读器自带缩放 | 不需要额外代码，但预览会先按需旋转（并发 2，避免一次建太多高分辨率画布） |
+
+> 旋转默认在**客户端**完成（省一次上传，也让缩略图能立刻跟随）；
+> 万一某个机型 canvas 旋转失败，代码会自动退回到 `/convert-to-pdf-by-ids` 的 `items[].rotate` 让服务端旋转。
 
 ### 5.2 关于「循环 wx.uploadFile」
 
@@ -298,6 +325,10 @@ for (每张图)  →  wx.uploadFile /api/v1/upload-image  →  收好 image_id
 
 若后端还没部署这两个接口，把 `pages/index/index.js` 里的 `STRATEGY` 改成 `'base64'`
 即变成一次性 JSON 请求（图片总大小建议控制在 5–10MB 内）。
+
+> 旧版后端只认 `image_ids`，不认 `items`。小程序默认只发 `image_ids`，
+> 只有在客户端旋转失败、需要服务端帮忙转的时候才会多带一个 `items` 字段
+> （旧版后端会忽略它，PDF 仍能生成，只是没旋转）。
 
 ### 5.3 本地联调（不用域名 / 不用 HTTPS）
 

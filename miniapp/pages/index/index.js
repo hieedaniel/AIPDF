@@ -48,26 +48,94 @@ const API = {
   convertBase64: `${BASE_URL}/api/v1/convert-to-pdf-base64`,
   // 方式三：原生多文件 multipart（H5/curl 用；小程序无法一次传多文件）
   convertMultipart: `${BASE_URL}/api/v1/convert-to-pdf`,
+  health: `${BASE_URL}/health`,
 };
 
 // 'uploadfile' = 循环 wx.uploadFile 分张上传后合并（默认）
 // 'base64'     = 一次性 base64 JSON（代码最短，但请求体比原图大约 1/3）
 const STRATEGY = 'uploadfile';
 
-const MAX_COUNT = 9; // 单次最多张数，需 ≤ 后端 MAX_FILE_COUNT
+// 单次最多张数：本机默认值，onLoad 时会用 /health 返回的 limits 收紧到服务端生效值，
+// 避免「手机允许 30 张、服务端只收 20 张」这种要到用户那里才暴露的错配。
+const MAX_COUNT = 30;
+// 微信 chooseMedia / chooseImage 的 count 上限就是 9，超过要分批追加
+const CHOOSE_BATCH = 9;
+// 上传并发数：串行 30 张太慢，全并发在弱网上容易超时且内存暴涨，取中间值
+const UPLOAD_CONCURRENCY = 3;
+
 const UPLOAD_TIMEOUT = 60 * 1000; // 单张上传超时
-const REQUEST_TIMEOUT = 60 * 1000; // 合成 / 下载超时
+const REQUEST_TIMEOUT = 120 * 1000; // 合成 / 下载超时（张数多时合成更久）
+const HEALTH_TIMEOUT = 6 * 1000; // 读服务端限制，失败就沿用本地默认值
 const COMPRESS_QUALITY = 80; // 上传前压缩质量
 const COMPRESS_MAX_WIDTH = 1600; // 上传前压缩后的长边像素
+const PREVIEW_MAX_SIDE = 2400; // 预览用旋转时的像素上限（够放大看清，又不至于爆内存）
+const MAX_CANVAS_PIXELS = 6 * 1000 * 1000; // 旋转画布的像素上限（极端长图会超机型 canvas 上限而导出空白）
 const PDF_TITLE = 'AI拍纸立得';
+
+// 排序模式：拖到上下边缘多近时开始自动滚动，以及每次滚多少像素
+const EDGE_SCROLL_ZONE = 90;
+const EDGE_SCROLL_STEP = 16;
+
+/**
+ * 有限并发执行，结果保持与入参同序。
+ *
+ * 串行发 30 张要等到天荒地老，一次性全发在弱网下会同时占满内存与连接，
+ * 所以固定开 N 条「流水线」，每条自己从队列里取下一张。
+ */
+function mapLimit(items, limit, worker) {
+  const total = items.length;
+  const results = new Array(total);
+  let cursor = 0;
+
+  const runner = async () => {
+    for (;;) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= total) return;
+      results[index] = await worker(items[index], index); // 先占位再 await，天然保序
+    }
+  };
+
+  const size = Math.max(1, Math.min(limit, total));
+  const jobs = [];
+  for (let i = 0; i < size; i += 1) jobs.push(runner());
+  return Promise.all(jobs).then(() => results);
+}
+
+/** 取窗口高度：拖动时判断是否该自动滚动，以及算最大滚动距离 */
+function windowHeight() {
+  try {
+    return wx.getWindowInfo().windowHeight;
+  } catch (e) {
+    const info = wx.getSystemInfoSync ? wx.getSystemInfoSync() : null;
+    return (info && info.windowHeight) || 0;
+  }
+}
+
+/** 震动反馈：不传回调的 wx API 失败会产生未处理的 Promise 拒绝，补齐 fail 更安静 */
+function vibrate(type) {
+  try {
+    wx.vibrateShort({ type, fail: () => {} });
+  } catch (e) {
+    // 部分机型/系统不支持震动，忽略
+  }
+}
 
 Page({
   data: {
-    images: [], // [{ path, size }]，数组顺序 = PDF 排版顺序
+    // [{ id, path, size, rotate }]，数组顺序 = PDF 排版顺序
+    images: [],
     maxCount: MAX_COUNT,
     pageMode: 'fit', // fit=每图一页，split=长图自动分页
     generating: false, // 合成中：禁用所有按钮，避免重复提交
     progressText: '', // 显示在主按钮上的进度文案
+    sorting: false, // 排序模式：长按缩略图进入，可拖动重排
+    dragging: false, // 正在拖动（拖动中的格子跟手 + 悬浮）
+    dragId: '', // 正在拖动的图片 id
+    dragLeft: 0, // 拖动中的格子位置（视口坐标，px）
+    dragTop: 0,
+    cellW: 0,
+    cellH: 0,
     isLocal: IS_LOCAL, // 调试态时在顶部展示当前后端地址
     env: ENV, // 当前环境，便于在 WXML 里做条件渲染
     baseUrl: BASE_URL,
@@ -83,7 +151,65 @@ Page({
     } catch (e) {
       appId = '';
     }
+
+    // 处理结果缓存：不进 data（避免 setData 传大对象/长路径），只做内部查表
+    this._processed = {}; // id -> { rotate, path } 压缩 + 旋转后的最终上传文件
+    this._rotatedPreview = {}; // `${id}:${rotate}` -> 高分辨率旋转结果
+    this._canvasNode = null; // 隐藏 canvas 节点（旋转用），只取一次
+    this._canvasPromise = null;
+    this._idSeed = 0;
+    this._scrollTop = 0; // onPageScroll 记录，拖动时用
+    this._rects = null; // 拖动时量取的所有缩略图位置
+    this._dragScrollTop = 0;
+    this._maxScrollTop = 0;
+
     this.setData({ appId });
+    this.loadServerLimits();
+  },
+
+  onPageScroll(e) {
+    const next = e.scrollTop || 0;
+
+    // 拖动中：页面滚动（含边缘自动滚动）后要把命中区的坐标一起平移，
+    // 以真实滚动值为准可以顺带修正 pageScrollTo 被截断带来的偏差
+    if (this.data.dragging && this._rects) {
+      const applied = next - (this._dragScrollTop || 0);
+      if (applied) {
+        this._dragScrollTop = next;
+        this._rects.forEach((rect) => {
+          rect.top -= applied;
+          rect.bottom -= applied;
+        });
+        this.setData({ dragTop: (this._dragPageY || 0) - next - this._dragOffsetY });
+      }
+      return;
+    }
+
+    this._scrollTop = next;
+  },
+
+  /** 读服务端生效的限制（失败就沿用本地默认值，不打扰用户） */
+  async loadServerLimits() {
+    try {
+      const body = await new Promise((resolve, reject) => {
+        wx.request({
+          url: API.health,
+          method: 'GET',
+          timeout: HEALTH_TIMEOUT,
+          success: (res) => resolve(res && res.data),
+          fail: reject,
+        });
+      });
+      const limits = body && body.limits;
+      const serverMax = Number(limits && limits.max_file_count) || 0;
+      if (serverMax > 0) this.setData({ maxCount: Math.min(serverMax, MAX_COUNT) });
+      if (body && body.warnings && body.warnings.length) {
+        // 服务端自检有问题时，至少让开发者在调试时看得见
+        console.warn('[AI拍纸立得] 服务端自检告警', body.warnings);
+      }
+    } catch (e) {
+      console.warn('[AI拍纸立得] 读取服务端限制失败，使用本地默认值', e);
+    }
   },
 
   /* =====================================================================
@@ -94,16 +220,17 @@ Page({
   async chooseImages() {
     if (this.data.generating) return;
 
-    const rest = MAX_COUNT - this.data.images.length;
+    const maxCount = this.data.maxCount || MAX_COUNT;
+    const rest = maxCount - this.data.images.length;
     if (rest <= 0) {
-      wx.showToast({ title: `最多 ${MAX_COUNT} 张`, icon: 'none' });
+      wx.showToast({ title: `最多 ${maxCount} 张`, icon: 'none' });
       return;
     }
 
     let res;
     try {
       res = await wx.chooseMedia({
-        count: rest,
+        count: Math.min(rest, CHOOSE_BATCH), // 微信单次选图上限 9 张，超了要再点一次
         mediaType: ['image'],
         sourceType: ['album', 'camera'], // 相册 + 拍照
         sizeType: ['compressed'], // 让微信先压一道，省流量
@@ -118,12 +245,22 @@ Page({
 
     const picked = (res && res.tempFiles ? res.tempFiles : [])
       .filter((f) => f && f.tempFilePath)
-      .map((f) => ({ path: f.tempFilePath, size: f.size || 0 }));
+      .map((f) => this.makeImageItem(f.tempFilePath, f.size || 0));
 
     if (!picked.length) return;
 
     this.setData({ images: this.data.images.concat(picked) });
-    wx.vibrateShort({ type: 'light' });
+    vibrate('light');
+
+    if (this.data.images.length >= maxCount) {
+      wx.showToast({ title: `已达上限 ${maxCount} 张`, icon: 'none' });
+    }
+  },
+
+  /** 生成一条图片记录；id 用于拖动排序/缓存查表（path 会变，不能当 key） */
+  makeImageItem(path, size) {
+    this._idSeed += 1;
+    return { id: `img-${Date.now()}-${this._idSeed}`, path, size, rotate: 0 };
   },
 
   /** 删除单张（网格上的 ✕） */
@@ -134,9 +271,10 @@ Page({
     const images = this.data.images.slice();
     if (index < 0 || index >= images.length) return;
 
+    this.dropCache(images[index].id);
     images.splice(index, 1);
     this.setData({ images });
-    wx.vibrateShort({ type: 'light' });
+    vibrate('light');
   },
 
   /** 清空全部 */
@@ -149,18 +287,67 @@ Page({
       confirmText: '清空',
       confirmColor: '#fa5151',
       success: (res) => {
-        if (res.confirm) this.setData({ images: [] });
+        if (res.confirm) {
+          this._processed = {};
+          this._rotatedPreview = {};
+          this.setData({ images: [], sorting: false, dragging: false });
+        }
       },
     });
   },
 
-  /** 点击缩略图看大图，左右可滑动 */
-  previewImage(e) {
-    const index = Number(e.currentTarget.dataset.index);
-    const urls = this.data.images.map((item) => item.path);
-    if (!urls.length) return;
+  /** 【旋转】每次顺时针 90°；缩略图用 CSS 即时跟随，所见即所得 */
+  rotateImage(e) {
+    if (this.data.generating) return;
 
-    wx.previewImage({ current: urls[index] || urls[0], urls });
+    const index = Number(e.currentTarget.dataset.index);
+    const images = this.data.images;
+    if (index < 0 || index >= images.length) return;
+
+    const next = images.slice();
+    const item = next[index];
+    next[index] = { ...item, rotate: ((item.rotate || 0) + 90) % 360 };
+
+    this.dropCache(item.id); // 角度变了，之前处理好的文件作废
+    this.setData({ images: next });
+    vibrate('light');
+  },
+
+  /** 单张图片的处理缓存失效（旋转/删除后必须调，否则会用到旧角度的文件） */
+  dropCache(id) {
+    delete this._processed[id];
+    Object.keys(this._rotatedPreview).forEach((key) => {
+      if (key.indexOf(`${id}:`) === 0) delete this._rotatedPreview[key];
+    });
+  },
+
+  /** 点击缩略图看大图；支持双指放大 / 双击放大（微信原生能力） */
+  async previewImage(e) {
+    if (this.data.dragging || this.data.sorting) return;
+
+    const index = Number(e.currentTarget.dataset.index);
+    const images = this.data.images;
+    if (!images.length) return;
+
+    // 没有旋转过的图就是零成本：直接用原路径
+    if (!images.some((item) => item.rotate)) {
+      wx.previewImage({
+        current: images[index] ? images[index].path : images[0].path,
+        urls: images.map((item) => item.path),
+      });
+      return;
+    }
+
+    wx.showLoading({ title: '准备预览…', mask: true });
+    try {
+      // 并发 2：旋转是高分辨率操作，一次开太多会爆内存
+      const urls = await mapLimit(images, 2, (item) => this.previewFile(item));
+      wx.hideLoading();
+      wx.previewImage({ current: urls[index] || urls[0], urls });
+    } catch (err) {
+      wx.hideLoading();
+      this.showError(err);
+    }
   },
 
   /** 切换排版模式 */
@@ -173,33 +360,209 @@ Page({
   },
 
   /* =====================================================================
-   *  二、生成 PDF 并预览
+   *  二、排序（长按进入 → 拖动 / 左右按钮）
+   * ===================================================================== */
+
+  /** 长按缩略图进入排序模式 */
+  onCellLongPress(e) {
+    if (this.data.generating) return;
+    if (this.data.images.length < 2) return;
+
+    this.setData({ sorting: true });
+    vibrate('medium');
+    wx.showToast({ title: '按住图片拖动即可排序', icon: 'none', duration: 1600 });
+  },
+
+  /** 退出排序模式 */
+  exitSort() {
+    this.endDrag();
+    this.setData({ sorting: false });
+  },
+
+  /** 排序模式下按住某张图，开始拖动 */
+  onCellTouchStart(e) {
+    if (!this.data.sorting || this.data.generating || this.data.dragging) return;
+
+    const touch = e.touches && e.touches[0];
+    const id = e.currentTarget.dataset.id;
+    if (!touch || !id) return;
+
+    const index = Number(e.currentTarget.dataset.index);
+    this._dragId = id;
+    this._dragPageY = touch.pageY;
+    this._dragScrollTop = this._scrollTop || 0;
+
+    // 量取所有缩略图的屏幕位置：拖动过程中靠它们判断“应该插到第几位”
+    const query = wx.createSelectorQuery();
+    query.selectAll('.cell--pic').boundingClientRect();
+    query.select('.page').boundingClientRect();
+    query.exec((res) => {
+      const rects = (res && res[0]) || [];
+      const pageRect = (res && res[1]) || null;
+      const self = rects[index];
+      if (!self || !rects.length) {
+        this._dragId = '';
+        return;
+      }
+
+      // 按“槽位”算位置，而不是直接用量到的矩形：
+      // 拖动时那一格脱离文档流，其余格子会向前补位，量到的矩形马上就过期了；
+      // 而网格槽位本身不随顺序变化，按公式推算就能得到一个稳定不抖的命中区。
+      const cellW = self.width;
+      const cellH = self.height;
+      const other = rects[rects.length > 1 ? 1 : 0];
+      const gapX = rects.length > 1 ? other.left - rects[0].left - cellW : 0;
+      const gapY = rects.length > 1 ? other.top - rects[0].top - cellH : 0;
+
+      // 每行几个：从第 0 个往右数，top 相同就是同一行
+      let perRow = 1;
+      while (perRow < rects.length && Math.abs(rects[perRow].top - rects[0].top) < 1) perRow += 1;
+
+      this._rects = rects.map((_, i) => ({
+        left: rects[0].left + (i % perRow) * (cellW + gapX),
+        top: rects[0].top + Math.floor(i / perRow) * (cellH + gapY),
+        width: cellW,
+        height: cellH,
+      }));
+      this._maxScrollTop = pageRect ? Math.max(0, pageRect.height - windowHeight()) : 0;
+      this._dragOffsetX = touch.pageX - self.left;
+      this._dragOffsetY = touch.pageY - this._dragScrollTop - self.top;
+
+      this.setData({
+        dragging: true,
+        dragId: id,
+        dragLeft: self.left,
+        dragTop: self.top,
+        cellW,
+        cellH,
+      });
+      vibrate('light');
+    });
+  },
+
+  /** 拖动中：跟手 + 就近换位 + 边缘自动滚动 */
+  onDragMove(e) {
+    if (!this.data.dragging || !this._rects) return;
+
+    const touch = e.touches && e.touches[0];
+    if (!touch) return;
+    this._dragPageY = touch.pageY;
+
+    const clientX = touch.pageX;
+    const clientY = touch.pageY - this._dragScrollTop;
+
+    this.setData({
+      dragLeft: clientX - this._dragOffsetX,
+      dragTop: clientY - this._dragOffsetY,
+    });
+
+    // 就近插入：取中心点离手指最近的格子（比“必须落在格子里”宽容，不会漏判）
+    let target = -1;
+    let best = Infinity;
+    this._rects.forEach((rect, i) => {
+      const dx = clientX - (rect.left + rect.width / 2);
+      const dy = clientY - (rect.top + rect.height / 2);
+      const distance = dx * dx + dy * dy;
+      if (distance < best) {
+        best = distance;
+        target = i;
+      }
+    });
+    if (target >= 0) this.moveTo(target);
+
+    // 拖到上下边缘时自动滚动，否则排在屏幕外的图根本拖不到
+    const height = windowHeight();
+    if (clientY < EDGE_SCROLL_ZONE) this.autoScrollBy(-EDGE_SCROLL_STEP);
+    else if (height && clientY > height - EDGE_SCROLL_ZONE) this.autoScrollBy(EDGE_SCROLL_STEP);
+  },
+
+  /** 松手 / 触摸被系统打断 */
+  endDrag() {
+    if (!this.data.dragging) return;
+    this._rects = null;
+    this._dragId = '';
+    // 拖动期间 onPageScroll 只更新 _dragScrollTop，这里同步回去，
+    // 否则下一次长按拖动会拿着旧的滚动值算偏移
+    this._scrollTop = this._dragScrollTop || this._scrollTop;
+    this.setData({ dragging: false, dragId: '' });
+  },
+
+  /** 把正在拖动的图插到 target 位置 */
+  moveTo(target) {
+    const images = this.data.images;
+    const from = images.findIndex((item) => item.id === this._dragId);
+    if (from < 0 || target < 0 || target >= images.length || from === target) return;
+
+    const next = images.slice();
+    const [moved] = next.splice(from, 1);
+    next.splice(target, 0, moved);
+    this.setData({ images: next });
+    vibrate('light');
+  },
+
+  /** 拖到边缘时滚动列表；视口坐标下的矩形要同步平移，否则命中判断会漂 */
+  autoScrollBy(delta) {
+    const max = this._maxScrollTop || 0;
+    const current = this._dragScrollTop || 0;
+    const next = Math.max(0, Math.min(max, current + delta));
+    const applied = next - current;
+    if (!applied) return;
+
+    this._dragScrollTop = next;
+    this._rects.forEach((rect) => {
+      rect.top -= applied;
+      rect.bottom -= applied;
+    });
+    wx.pageScrollTo({ scrollTop: next, duration: 0, fail: () => {} });
+    this.setData({ dragTop: this._dragPageY - next - this._dragOffsetY });
+  },
+
+  /** 拖动不好用时的兜底：点 ‹ / › 与相邻一张交换位置 */
+  moveImage(e) {
+    if (this.data.generating) return;
+
+    const index = Number(e.currentTarget.dataset.index);
+    const delta = Number(e.currentTarget.dataset.delta);
+    const images = this.data.images;
+    const target = index + delta;
+    if (index < 0 || index >= images.length || target < 0 || target >= images.length) return;
+
+    const next = images.slice();
+    const tmp = next[index];
+    next[index] = next[target];
+    next[target] = tmp;
+    this.setData({ images: next });
+    vibrate('light');
+  },
+
+  /* =====================================================================
+   *  三、生成 PDF 并预览
    * ===================================================================== */
 
   /** 【生成 PDF 并预览】主流程 */
   async generatePdf() {
     if (this.data.generating) return;
 
-    const paths = this.data.images.map((item) => item.path);
-    if (!paths.length) {
+    const images = this.data.images;
+    if (!images.length) {
       wx.showToast({ title: '请先添加图片', icon: 'none' });
       return;
     }
 
-    this.setData({ generating: true, progressText: '准备中…' });
+    this.setData({ generating: true, sorting: false, dragging: false, progressText: '准备中…' });
     wx.showLoading({ title: '准备中…', mask: true });
 
     let result;
     try {
       // 1) 生成（分张上传合并 / 一次性 base64）
       result = STRATEGY === 'base64'
-        ? await this.convertByBase64(paths)
-        : await this.convertByUploadFile(paths);
+        ? await this.convertByBase64(images)
+        : await this.convertByUploadFile(images);
 
       const pdfUrl = result && result.pdf_url;
       if (!pdfUrl) throw new Error('服务端未返回下载地址');
 
-      // 2) 下载 + 打开预览
+      // 2) 下载 + 打开预览（微信内置阅读器自带双指缩放）
       this.setData({ progressText: '正在下载…' });
       wx.showLoading({ title: '正在下载…', mask: true });
       await this.downloadAndPreview(pdfUrl);
@@ -222,31 +585,54 @@ Page({
   /* ---------------------- 方式一：分张上传 → 合并 ---------------------- */
 
   /**
-   * 循环 wx.uploadFile 逐张上传，收集 image_id，
-   * 最后一次请求按顺序合并为单个 PDF。
+   * 并发上传（限流 3）收集 image_id，最后一次请求按顺序合并成单个 PDF。
+   * 旋转优先在客户端完成（所见即所得，也不给服务端添负担）；某张旋转失败时
+   * 退回让服务端旋转（旧版服务端会忽略 items 字段，PDF 仍能生成，只是没转）。
    */
-  async convertByUploadFile(paths) {
-    const imageIds = [];
-
-    for (let i = 0; i < paths.length; i += 1) {
-      const label = `上传中 ${i + 1}/${paths.length}`;
+  async convertByUploadFile(images) {
+    const total = images.length;
+    let done = 0;
+    const tick = () => {
+      done += 1;
+      const label = `上传中 ${done}/${total}`;
       this.setData({ progressText: label });
       wx.showLoading({ title: label, mask: true });
+    };
 
-      const filePath = await this.compress(paths[i]); // 压缩，控制请求体
-      const uploaded = await this.uploadOne(filePath);
-      imageIds.push(uploaded.image_id);
-    }
+    const serverRotations = [];
+    const imageIds = await mapLimit(images, UPLOAD_CONCURRENCY, async (item, index) => {
+      let path = item.path;
+      let rotate = item.rotate || 0;
+      try {
+        path = await this.prepareFile(item);
+        rotate = 0; // 客户端已经转过
+      } catch (err) {
+        console.warn('[AI拍纸立得] 客户端旋转失败，改由服务端旋转', err);
+        path = await this.compress(item.path);
+      }
+
+      const uploaded = await this.uploadOne(path);
+      serverRotations[index] = rotate;
+      tick();
+      return uploaded.image_id;
+    });
 
     this.setData({ progressText: '正在合成…' });
     wx.showLoading({ title: '正在合成…', mask: true });
 
     // 数组顺序即页面顺序，服务端按此顺序排版
-    return this.postJSON(API.convertByIds, {
+    const payload = {
       image_ids: imageIds,
       page_mode: this.data.pageMode,
       pdf_title: PDF_TITLE,
-    });
+    };
+    if (serverRotations.some((rotate) => rotate)) {
+      payload.items = imageIds.map((imageId, index) => ({
+        image_id: imageId,
+        rotate: serverRotations[index] || 0,
+      }));
+    }
+    return this.postJSON(API.convertByIds, payload);
   },
 
   /** 上传单张图片 → { image_id } */
@@ -273,24 +659,32 @@ Page({
 
   /* ---------------------- 方式二：一次性 base64 ---------------------- */
 
-  async convertByBase64(paths) {
-    const images = [];
+  async convertByBase64(images) {
+    const total = images.length;
+    let done = 0;
+    const payloadImages = await mapLimit(images, UPLOAD_CONCURRENCY, async (item, index) => {
+      let path = item.path;
+      try {
+        path = await this.prepareFile(item);
+      } catch (err) {
+        console.warn('[AI拍纸立得] 客户端旋转失败，按原图提交', err);
+        path = await this.compress(item.path);
+      }
 
-    for (let i = 0; i < paths.length; i += 1) {
-      const label = `读取中 ${i + 1}/${paths.length}`;
+      done += 1;
+      const label = `读取中 ${done}/${total}`;
       this.setData({ progressText: label });
       wx.showLoading({ title: label, mask: true });
 
-      const filePath = await this.compress(paths[i]);
-      const base64 = await this.readAsBase64(filePath);
-      images.push({ file_name: `page-${i + 1}.jpg`, data: base64 });
-    }
+      const base64 = await this.readAsBase64(path);
+      return { file_name: `page-${index + 1}.jpg`, data: base64 };
+    });
 
     this.setData({ progressText: '正在合成…' });
     wx.showLoading({ title: '正在合成…', mask: true });
 
     return this.postJSON(API.convertBase64, {
-      images,
+      images: payloadImages,
       page_mode: this.data.pageMode,
       pdf_title: PDF_TITLE,
     });
@@ -298,7 +692,7 @@ Page({
 
   /* ---------------------- 下载 + 预览 ---------------------- */
 
-  /** 依次 wx.downloadFile 下载，再 wx.openDocument 打开（允许保存/转发） */
+  /** wx.downloadFile 下载，再 wx.openDocument 打开（允许保存/转发，可双指缩放） */
   async downloadAndPreview(pdfUrl) {
     const filePath = await new Promise((resolve, reject) => {
       wx.downloadFile({
@@ -325,21 +719,148 @@ Page({
   },
 
   /* =====================================================================
-   *  三、通用工具
+   *  四、图片处理（压缩 / 旋转）
    * ===================================================================== */
 
+  /**
+   * 得到「最终要上传的那张图」：先压到 1600px，再按需旋转。
+   * 结果按 id + 角度缓存，同一张图不会在上传/预览里被反复处理。
+   */
+  async prepareFile(item) {
+    const rotate = item.rotate || 0;
+    const cached = this._processed[item.id];
+    if (cached && cached.rotate === rotate) return cached.path;
+
+    const compressed = await this.compress(item.path);
+    const path = await this.rotateFile(compressed, rotate);
+    this._processed[item.id] = { rotate, path };
+    return path;
+  },
+
+  /** 预览用：已处理过的直接复用，否则用更高分辨率（2400px）旋转一次 */
+  async previewFile(item) {
+    const rotate = item.rotate || 0;
+    if (!rotate) return item.path;
+
+    const processed = this._processed[item.id];
+    if (processed && processed.rotate === rotate) return processed.path;
+
+    const key = `${item.id}:${rotate}`;
+    if (this._rotatedPreview[key]) return this._rotatedPreview[key];
+
+    const compressed = await this.compress(item.path, PREVIEW_MAX_SIDE);
+    const path = await this.rotateFile(compressed, rotate);
+    this._rotatedPreview[key] = path;
+    return path;
+  },
+
   /** 压缩图片；失败时退回原图，绝不阻断流程 */
-  compress(filePath) {
+  compress(filePath, maxWidth = COMPRESS_MAX_WIDTH) {
     return new Promise((resolve) => {
       wx.compressImage({
         src: filePath,
         quality: COMPRESS_QUALITY,
-        compressedWidth: COMPRESS_MAX_WIDTH,
+        compressedWidth: maxWidth,
         success: (res) => resolve(res.tempFilePath || filePath),
         fail: () => resolve(filePath),
       });
     });
   },
+
+  /** 取隐藏 canvas 节点（type="2d"），只查询一次 */
+  getCanvasNode() {
+    if (this._canvasNode) return Promise.resolve(this._canvasNode);
+    if (this._canvasPromise) return this._canvasPromise;
+
+    this._canvasPromise = new Promise((resolve, reject) => {
+      wx.createSelectorQuery()
+        .select('#rotate-canvas')
+        .fields({ node: true, size: true })
+        .exec((res) => {
+          const node = res && res[0] && res[0].node;
+          if (!node) {
+            this._canvasPromise = null;
+            reject(new Error('旋转组件未就绪，请稍后重试'));
+            return;
+          }
+          this._canvasNode = node;
+          resolve(node);
+        });
+    });
+    return this._canvasPromise;
+  },
+
+  /**
+   * 用隐藏 canvas 把图片顺时针旋转 rotate 度，返回新的临时文件路径。
+   *
+   * 放在客户端做的原因：缩略图能用 CSS 立刻跟随（所见即所得），
+   * 也不用为了转个方向把原图重新上传一遍。
+   */
+  async rotateFile(filePath, rotate) {
+    const degree = (((rotate || 0) % 360) + 360) % 360;
+    if (!degree) return filePath;
+
+    const canvas = await this.getCanvasNode();
+
+    const info = await new Promise((resolve, reject) => {
+      wx.getImageInfo({
+        src: filePath,
+        success: resolve,
+        fail: () => reject(new Error('读取图片尺寸失败，无法旋转')),
+      });
+    });
+
+    const { width, height } = info;
+    // 极端长图（如 1080x12000 的长截图）直接建同等大小的画布会超过部分机型的
+    // canvas 上限（导出空白/报错），所以先算一个缩放比，够清晰又不爆内存
+    const fit = Math.min(1, Math.sqrt(MAX_CANVAS_PIXELS / (width * height)));
+    const drawW = Math.max(1, Math.round(width * fit));
+    const drawH = Math.max(1, Math.round(height * fit));
+    const swap = degree % 180 !== 0; // 转 90/270 时长宽互换
+    const outW = swap ? drawH : drawW;
+    const outH = swap ? drawW : drawH;
+
+    // type="2d" 的 canvas 必须显式设置像素尺寸：
+    // CSS 尺寸只影响显示，不设 canvas.width 会按 CSS 尺寸导出而变糊
+    canvas.width = outW;
+    canvas.height = outH;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, outW, outH);
+
+    const image = canvas.createImage();
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new Error('图片解码失败，无法旋转'));
+      image.src = filePath;
+    });
+
+    ctx.save();
+    ctx.translate(outW / 2, outH / 2);
+    ctx.rotate((degree * Math.PI) / 180); // canvas 的 rotate 是顺时针
+    ctx.drawImage(image, -drawW / 2, -drawH / 2, drawW, drawH);
+    ctx.restore();
+
+    const res = await new Promise((resolve, reject) => {
+      wx.canvasToTempFilePath({
+        canvas,
+        x: 0,
+        y: 0,
+        width: outW,
+        height: outH,
+        destWidth: outW,
+        destHeight: outH,
+        fileType: 'jpg',
+        quality: 0.92,
+        success: resolve,
+        fail: (err) => reject(this.buildError(err, '旋转导出失败')),
+      });
+    });
+    return res.tempFilePath;
+  },
+
+  /* =====================================================================
+   *  五、通用工具
+   * ===================================================================== */
 
   /** 读文件为 base64（带 data URL 前缀，后端两种写法都支持） */
   readAsBase64(filePath) {
@@ -409,7 +930,7 @@ Page({
       IMAGE_NOT_FOUND: '图片已过期，请重新添加后再试',
       IMAGE_TOO_SMALL: '有图片分辨率过低，请换一张清晰的',
       UNSUPPORTED_TYPE: '存在不支持的图片格式，请用 JPG/PNG',
-      TOO_MANY_FILES: `最多 ${MAX_COUNT} 张图片`,
+      TOO_MANY_FILES: `最多 ${this.data.maxCount || MAX_COUNT} 张图片`,
       FILE_TOO_LARGE: '图片过大，请压缩后再试',
       TOTAL_TOO_LARGE: '图片总大小超限，请减少张数',
       REQUEST_TOO_LARGE: '上传内容过大，请减少张数或压缩图片',
@@ -446,7 +967,7 @@ Page({
         : `连不上后端（${BASE_URL}）\n` +
           '1) 后端是否已启动：python main.py\n' +
           '2) 是否勾选「不校验合法域名…」\n' +
-          '3) 浏览器打开 ' + BASE_URL + '/health 试试';
+          `3) 浏览器打开 ${BASE_URL}/health 试试`;
     }
 
     console.error('[AI拍纸立得] 生成失败', code, err);

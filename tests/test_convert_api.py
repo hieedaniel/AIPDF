@@ -312,3 +312,100 @@ def test_permission_error_is_reported_as_storage_not_writable(client, monkeypatc
     assert resp.status_code == 500
     assert resp.json()["code"] == "STORAGE_NOT_WRITABLE"
     assert "不可写" in resp.json()["message"]
+
+
+# ------------------- 旋转（items）/ 大张数 / limits -------------------
+
+def _upload_one(client, size=(600, 1200)):
+    resp = client.post(UPLOAD_URL, files={"file": ("p.jpg", make_image(size), "image/jpeg")})
+    assert resp.status_code == 200, resp.text
+    return resp.json()["image_id"]
+
+
+def _page_image_wh(doc, index):
+    """取某页内嵌图片矩形的宽高，用于判断横竖。"""
+    info = doc[index].get_image_info()
+    assert info, f"第 {index} 页没有图片"
+    x0, y0, x1, y1 = info[0]["bbox"]
+    return x1 - x0, y1 - y0
+
+
+def test_convert_by_ids_items_rotate_is_applied(client, static_dir):
+    """items 里的 rotate 必须在服务端真正生效：竖图转 90° 后排版变横向。"""
+    first_id = _upload_one(client, (600, 1200))
+    second_id = _upload_one(client, (600, 1200))
+
+    resp = client.post(
+        BY_IDS_URL,
+        json={
+            "items": [{"image_id": first_id, "rotate": 90}, {"image_id": second_id}],
+            "page_mode": "fit",
+            "pdf_title": "旋转测试",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["source_count"] == 2 and body["page_count"] == 2
+
+    with fitz.open(Path(static_dir, settings.pdf_subdir, body["file_name"])) as doc:
+        w1, h1 = _page_image_wh(doc, 0)   # 旋转过：横向
+        w2, h2 = _page_image_wh(doc, 1)   # 没旋转：竖向
+    assert w1 > h1
+    assert w2 < h2
+
+
+def test_convert_by_ids_items_take_precedence_over_image_ids(client):
+    """同时传 items 与 image_ids 时以 items 为准（旧客户端字段仍可解析）。"""
+    a = _upload_one(client, (600, 600))
+    b = _upload_one(client, (600, 1200))
+
+    resp = client.post(
+        BY_IDS_URL,
+        json={"image_ids": [a, b], "items": [{"image_id": a, "rotate": 90}]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["source_count"] == 1     # 只用了 items 里那一张
+
+
+def test_convert_by_ids_rejects_empty_bodies(client):
+    for payload in ({"items": []}, {"image_ids": [], "items": []}, {"items": None}):
+        resp = client.post(BY_IDS_URL, json=payload)
+        assert resp.status_code == 422, payload
+        assert resp.json()["code"] == "INVALID_PARAM"
+
+
+def test_convert_by_ids_rejects_path_traversal_in_items(client):
+    resp = client.post(BY_IDS_URL, json={"items": [{"image_id": "../../etc/passwd"}]})
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "INVALID_IMAGE_ID"
+
+
+def test_merge_more_than_nine_images(client, static_dir):
+    """一次十几张（超过 chooseMedia 单次 9 张、也超过旧上限）必须能成功合并。"""
+    count = 12
+    image_ids = [_upload_one(client, (500, 700)) for _ in range(count)]
+    resp = client.post(BY_IDS_URL, json={"image_ids": image_ids, "page_mode": "fit"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["source_count"] == count
+    assert body["page_count"] == count
+    assert Path(static_dir, settings.pdf_subdir, body["file_name"]).is_file()
+    # 合成后暂存图应被清掉（惰性读取路径也要清理）
+    leftovers = {p.name for p in Path(settings.upload_dir).iterdir()}
+    assert leftovers & {f"{image_id}.jpg" for image_id in image_ids} == set()
+
+
+def test_upload_count_limit_is_reported(client):
+    limit = settings.max_file_count
+    resp = client.post(BY_IDS_URL, json={"image_ids": ["0" * 32] * (limit + 1)})
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["code"] == "TOO_MANY_FILES"
+
+
+def test_health_exposes_limits(client):
+    """小程序启动时读 /health 的 limits 来收敛选图上限，避免端/服务端限制脱节。"""
+    limits = client.get("/health").json()["limits"]
+    assert limits["max_file_count"] == settings.max_file_count
+    assert limits["max_file_size_mb"] == settings.max_file_size_mb
+    assert limits["max_total_size_mb"] == settings.max_total_size_mb
+    assert limits["max_file_count"] >= 20

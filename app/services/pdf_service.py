@@ -11,8 +11,9 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import chain
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Iterable, Iterator, List, Optional, Sequence, Tuple
 
 import anyio
 from starlette.datastructures import UploadFile
@@ -73,6 +74,7 @@ async def convert_uploads_to_pdf(
             page_mode=page_mode,
             pdf_title=pdf_title,
             cfg=cfg,
+            source_count=len(raw_files),
         )
     )
 
@@ -111,7 +113,9 @@ def _decode_base64_and_build(
             raise err.total_too_large(cfg.max_total_size_mb)
         raw_files.append((name, data))
 
-    return convert_streams_to_pdf(raw_files, page_mode=page_mode, pdf_title=pdf_title, cfg=cfg)
+    return convert_streams_to_pdf(
+        raw_files, page_mode=page_mode, pdf_title=pdf_title, cfg=cfg, source_count=len(images)
+    )
 
 
 async def save_temp_image(upload: UploadFile, *, cfg: Settings = default_settings) -> Tuple[str, Path]:
@@ -145,46 +149,73 @@ def _save_temp_image_sync(data: bytes, name: str, cfg: Settings) -> Tuple[str, P
 async def convert_temp_images_to_pdf(
     image_ids: Sequence[str],
     *,
+    rotations: Optional[Sequence[int]] = None,
     page_mode: Optional[str] = None,
     pdf_title: Optional[str] = None,
     cfg: Settings = default_settings,
 ) -> ConvertResult:
-    """分张上传流程第二步：按传入的 image_id 顺序合并为一个 PDF。"""
+    """分张上传流程第二步：按传入的 image_id 顺序合并为一个 PDF。
+
+    rotations 与 image_ids 一一对应，顺时针角度（0/90/180/270），
+    在服务端旋转是无损的（不需要在手机上重新编码一遍）。
+    """
     if not image_ids:
         raise err.no_files()
     if len(image_ids) > cfg.max_file_count:
         raise err.too_many_files(cfg.max_file_count)
 
     return await anyio.to_thread.run_sync(
-        lambda: _merge_temp_images(image_ids, page_mode=page_mode, pdf_title=pdf_title, cfg=cfg)
+        lambda: _merge_temp_images(
+            image_ids,
+            rotations=rotations,
+            page_mode=page_mode,
+            pdf_title=pdf_title,
+            cfg=cfg,
+        )
     )
 
 
 def _merge_temp_images(
     image_ids: Sequence[str],
     *,
+    rotations: Optional[Sequence[int]] = None,
     page_mode: Optional[str],
     pdf_title: Optional[str],
     cfg: Settings,
 ) -> ConvertResult:
-    raw_files: List[Tuple[str, bytes]] = []
+    angles = list(rotations or [])
+    if angles and len(angles) != len(image_ids):
+        raise err.invalid_param(
+            f"rotations 数量（{len(angles)}）必须与 image_ids（{len(image_ids)}）一致"
+        )
+
+    # 先只 stat 不读取：几十张图的总量校验不需要把内容放进内存
     total_bytes = 0
     for image_id in image_ids:
         path = storage.resolve_upload_path(cfg, image_id)
         if not path.is_file():
             raise err.image_not_found(image_id)
-        data = path.read_bytes()
-        total_bytes += len(data)
+        total_bytes += storage.path_size(path)
         if total_bytes > cfg.max_total_size_bytes:
             raise err.total_too_large(cfg.max_total_size_mb)
-        raw_files.append((path.name, data))
+
+    # 惰性读取：真正生成时一次只载入一张原图
+    def lazy_files() -> Iterator[Tuple[str, bytes]]:
+        for image_id in image_ids:
+            path = storage.resolve_upload_path(cfg, image_id)
+            yield path.name, path.read_bytes()
 
     try:
         result = convert_streams_to_pdf(
-            raw_files, page_mode=page_mode, pdf_title=pdf_title, cfg=cfg
+            lazy_files(),
+            rotations=angles or None,
+            page_mode=page_mode,
+            pdf_title=pdf_title,
+            cfg=cfg,
+            source_count=len(image_ids),
         )
     except Exception:
-        # 失败时保留暂存图，方便客户端直接重试（30 分钟后由后台任务兜底清理）
+        # 失败时保留暂存图，方便客户端直接重试（TTL 后由后台任务兜底清理）
         logger.warning("合并失败，保留 %d 张暂存原图供重试", len(image_ids))
         raise
 
@@ -195,41 +226,51 @@ def _merge_temp_images(
 
 
 def convert_streams_to_pdf(
-    raw_files: Sequence[Tuple[str, bytes]],
+    raw_files: Iterable[Tuple[str, bytes]],
     *,
     page_mode: Optional[str] = None,
     pdf_title: Optional[str] = None,
     cfg: Settings = default_settings,
+    source_count: Optional[int] = None,
+    rotations: Optional[Sequence[int]] = None,
 ) -> ConvertResult:
-    """同步版本：入参为 [(原始文件名, 图片字节), ...]，按顺序合成 PDF。"""
-    if not raw_files:
-        raise err.no_files()
+    """同步版本：入参为 [(原始文件名, 图片字节), ...]，按顺序合成 PDF。
 
+    raw_files 可以是生成器。页面是惰性生成的：取一页、写一页、释放一页，
+    因此合成几十张图时内存占用基本恒定（不再与张数线性增长）。
+    """
     mode = (page_mode or cfg.page_mode or "fit").strip().lower()
     if mode not in PAGE_MODES:
         raise err.invalid_param(f"page_mode 只能是 {PAGE_MODES} 之一，收到：{page_mode!r}")
 
-    ratio = pdf_builder.usable_ratio(cfg.margin_pt)
-    pages: List[image_utils.PageImage] = []
+    total = source_count if source_count is not None else _safe_len(raw_files)
+    if total is not None and total <= 0:
+        raise err.no_files()
 
-    for name, raw in raw_files:
-        image = image_utils.decode_image(raw, name, cfg=cfg)
-        try:
-            pages.extend(
-                image_utils.split_pages(
-                    image,
-                    mode,
-                    usable_ratio=ratio,
-                    quality=cfg.jpeg_quality,
-                )
-            )
-        finally:
-            image.close()
+    angles = list(rotations or []) if rotations else []
+    if angles and total is not None and len(angles) != total:
+        raise err.invalid_param(
+            f"rotations 数量（{len(angles)}）必须与图片数量（{total}）一致"
+        )
 
-    if not pages:
-        raise err.pdf_build_failed("图片处理结果为空")
+    items = _iter_raw_items(raw_files, angles)
+    # 探一次头：既用于空判断，也用于文件名前缀（生成器也能工作）
+    first = next(items, None)
+    if first is None:
+        raise err.no_files()
 
-    output_path = storage.new_pdf_path(cfg, prefix=pdf_title or raw_files[0][0])
+    if total is None:
+        raise err.invalid_param("传入生成器时必须提供 source_count")
+
+    pages = image_utils.iter_page_images(
+        chain((first,), items),
+        mode,
+        usable_ratio=pdf_builder.usable_ratio(cfg.margin_pt),
+        quality=cfg.jpeg_quality,
+        cfg=cfg,
+    )
+
+    output_path = storage.new_pdf_path(cfg, prefix=pdf_title or first[0])
     page_count = pdf_builder.build_pdf(
         pages,
         output_path,
@@ -242,7 +283,7 @@ def convert_streams_to_pdf(
         path=output_path,
         page_count=page_count,
         size_bytes=storage.path_size(output_path),
-        source_count=len(raw_files),
+        source_count=total,
         expires_at=storage.expires_at(cfg),
     )
     logger.info(
@@ -253,6 +294,24 @@ def convert_streams_to_pdf(
         result.size_bytes / 1024 / 1024,
     )
     return result
+
+
+def _safe_len(raw_files: Iterable[Tuple[str, bytes]]) -> Optional[int]:
+    """序列才能取长度；生成器返回 None，由调用方显式传 source_count。"""
+    try:
+        return len(raw_files)  # type: ignore[arg-type]
+    except TypeError:
+        return None
+
+
+def _iter_raw_items(
+    raw_files: Iterable[Tuple[str, bytes]],
+    rotations: Sequence[int],
+) -> Iterator[Tuple[str, bytes, int]]:
+    """把 (文件名, 字节) 与旋转角度配成三元组，交给图片层惰性处理。"""
+    for index, (name, raw) in enumerate(raw_files):
+        angle = rotations[index] if index < len(rotations) else 0
+        yield name, raw, angle
 
 
 def merge_uploads(
